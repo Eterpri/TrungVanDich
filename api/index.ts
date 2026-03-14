@@ -58,25 +58,51 @@ const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
 };
 
 const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
-  const maxRetries = 4;
+  const maxRetries = 5;
   let lastError: any = null;
   let currentUrl = targetUrl;
 
   // Mirror fallback for 69shuba if blocked or down
   const is69Shu = targetUrl.includes("69shu");
-  // Updated mirrors list with more reliable ones
-  const mirrors = ["69shuba.cx", "69shuba.pro", "www.69shuba.pro", "69shuba.top", "www.69shuba.top", "69shuba.com", "www.69shuba.com"];
+  // Expanded and prioritized mirrors list
+  const mirrors = [
+    "www.69shuba.cx", 
+    "69shuba.cx", 
+    "www.69shuba.pro", 
+    "69shuba.pro", 
+    "www.69shuba.top", 
+    "69shuba.top", 
+    "www.69xinshuba.com",
+    "69xinshuba.com",
+    "www.69shuba.com", 
+    "69shuba.com"
+  ];
 
   for (let i = 0; i <= maxRetries; i++) {
     try {
       const response = await axios.get(currentUrl, {
         responseType: "arraybuffer",
         headers: getScrapingHeaders(currentUrl, i),
-        timeout: 12000,
+        timeout: 15000,
         maxRedirects: 5,
         validateStatus: (status) => status < 500,
         ...options
       });
+
+      // Check for landing pages like choto.click or empty responses
+      if (response.status === 200 && is69Shu) {
+        const content = Buffer.from(response.data).toString('utf-8').toLowerCase();
+        if (content.includes("choto.click") || content.includes("landing") || content.length < 500) {
+          console.log(`Landing page detected on ${currentUrl}, switching mirror...`);
+          if (i < mirrors.length) {
+            const urlObj = new URL(currentUrl);
+            const nextMirror = mirrors[i % mirrors.length];
+            urlObj.host = nextMirror;
+            currentUrl = urlObj.href;
+            continue;
+          }
+        }
+      }
 
       if (response.status === 403) {
         if (is69Shu && i < mirrors.length) {
@@ -109,7 +135,6 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
         console.log(`Network error on ${urlObj.host}, switching to mirror ${nextMirror}`);
         urlObj.host = nextMirror;
         currentUrl = urlObj.href;
-        // No delay for mirror switch on network error
         continue;
       }
 
