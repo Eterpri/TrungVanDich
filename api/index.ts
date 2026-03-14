@@ -420,33 +420,44 @@ app.post("/api/novel-info", async (req, res) => {
 
     const chapters: { title: string; url: string }[] = [];
     const chapterSelectors = [
-      ".catalog ul li a", "#catalog ul li a", ".booknav2 + .catalog a", "ul.mu_uul li a", 
+      ".catalog ul li a", "#catalog ul li a", "ul.mu_uul li a", 
       ".chapter-list a", "#list a", ".book-mulu a", ".mulu_list a",
       ".catalog a", "ul.list-charts a", ".quanshu-list a", ".box_con #list dl dd a",
       ".centent a", "td.ccss a", ".mainbody a", "#yuedu a"
     ];
 
+    let bestChapters: { title: string; url: string }[] = [];
+
     for (const selector of chapterSelectors) {
+      const currentChapters: { title: string; url: string }[] = [];
       $(selector).each((_, el) => {
         const $el = $(el);
         const cTitle = $el.text().trim();
         let cUrl = $el.attr("href");
         
-        // Skip non-chapter links
         if (!cUrl || !cTitle || cTitle.length < 2 || cUrl.includes("javascript:") || cUrl === "#") return;
-        if (cTitle.includes("首页") || cTitle.includes("目录") || cTitle.includes("书页")) return;
+        if (cTitle.includes("首页") || cTitle.includes("目录") || cTitle.includes("书页") || cTitle.includes("下一页")) return;
 
-        if (cUrl && cTitle) {
-          if (!cUrl.startsWith("http")) cUrl = new URL(cUrl, targetUrl).href;
-          chapters.push({ title: cTitle, url: cUrl });
+        if (!cUrl.startsWith("http")) cUrl = new URL(cUrl, targetUrl).href;
+        
+        // Avoid duplicates in the same list
+        if (!currentChapters.find(c => c.url === cUrl)) {
+          currentChapters.push({ title: cTitle, url: cUrl });
         }
       });
-      if (chapters.length > 5) break; // Found a good list
+
+      // If we find a significantly longer list, keep it
+      if (currentChapters.length > bestChapters.length) {
+        bestChapters = currentChapters;
+      }
+      
+      // If we found a very long list (likely the full TOC), we can stop
+      if (bestChapters.length > 50) break;
     }
 
-    // Fallback: search for any links that look like chapter links (contain digits and .html or /txt/)
-    if (chapters.length === 0) {
-      console.log("No chapters found with selectors, trying fallback regex...");
+    // Fallback: search for any links that look like chapter links if we still have very few
+    if (bestChapters.length < 10) {
+      console.log("Found very few chapters, trying fallback regex on all links...");
       $("a").each((_, el) => {
         const $el = $(el);
         const cTitle = $el.text().trim();
@@ -454,15 +465,14 @@ app.post("/api/novel-info", async (req, res) => {
         if (cUrl && cTitle && (cUrl.includes(".html") || cUrl.match(/\/txt\/\d+/)) && cTitle.length > 2) {
           let fullUrl = cUrl;
           if (!fullUrl.startsWith("http")) fullUrl = new URL(fullUrl, targetUrl).href;
-          // Avoid duplicates
-          if (!chapters.find(c => c.url === fullUrl)) {
-            chapters.push({ title: cTitle, url: fullUrl });
+          if (!bestChapters.find(c => c.url === fullUrl)) {
+            bestChapters.push({ title: cTitle, url: fullUrl });
           }
         }
       });
     }
 
-    res.json({ title, author, description, cover, chapters: chapters.slice(0, 2000) });
+    res.json({ title, author, description, cover, chapters: bestChapters.slice(0, 3000) });
   } catch (error: any) {
     res.status(500).json({ error: `Lỗi lấy thông tin truyện: ${error.message}` });
   }
