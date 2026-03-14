@@ -400,7 +400,10 @@ export default function App() {
   };
 
   const toggleSpeak = async () => {
-    if (!synth) return;
+    if (!synth) {
+      alert("Trình duyệt của bạn không hỗ trợ phát giọng nói.");
+      return;
+    }
 
     if (isSpeaking) {
       synth.cancel();
@@ -417,88 +420,117 @@ export default function App() {
       return;
     }
 
-    if (!translatedContent) return;
-
-    // Play silent audio immediately to catch user gesture
-    if (silentAudioRef.current) {
-      silentAudioRef.current.play().catch(e => console.log("Silent audio play blocked", e));
+    if (!translatedContent) {
+      alert("Nội dung chưa sẵn sàng để đọc.");
+      return;
     }
 
-    // Clean markdown for better speech
-    const cleanText = translatedContent
-      .replace(/[#*`]/g, '')
-      .replace(/\[.*?\]\(.*?\)/g, '');
+    try {
+      // Force resume and cancel any pending tasks
+      synth.resume();
+      synth.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    
-    // Find best Vietnamese voice
-    const viVoice = voices.find(v => v.lang.includes('vi')) || 
-                  voices.find(v => v.lang.startsWith('vi'));
-    if (viVoice) {
-      utterance.voice = viVoice;
-    }
-    
-    utterance.lang = 'vi-VN';
-    utterance.rate = ttsRate;
-    
-    // Start speaking IMMEDIATELY to preserve user gesture
-    utteranceRef.current = utterance;
-    setIsSpeaking(true);
-    
-    // Android fix: cancel any pending speech before starting new one
-    synth.cancel();
-    setTimeout(() => {
-      synth.speak(utterance);
-    }, 50);
+      // Play silent audio immediately to keep process alive
+      if (silentAudioRef.current) {
+        silentAudioRef.current.play().catch(() => {});
+      }
 
-    // Request Wake Lock and Media Session AFTER starting speech
-    if ('wakeLock' in navigator) {
-      try {
-        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-      } catch (err) {}
-    }
+      // Clean text
+      const cleanText = translatedContent
+        .replace(/[#*`]/g, '')
+        .replace(/\[.*?\]\(.*?\)/g, '')
+        .trim();
 
-    if ('mediaSession' in navigator) {
-      (navigator as any).mediaSession.metadata = new window.MediaMetadata({
-        title: novelData?.title || 'Đang đọc truyện',
-        artist: 'TrungVăn Dịch',
-        album: 'Audiobook',
-        artwork: [{ src: 'https://picsum.photos/seed/book/512/512', sizes: '512x512', type: 'image/png' }]
-      });
+      if (!cleanText) return;
 
-      (navigator as any).mediaSession.setActionHandler('pause', () => {
-        synth.pause();
-        setIsSpeaking(false);
-      });
-      (navigator as any).mediaSession.setActionHandler('stop', () => {
-        synth.cancel();
-        setIsSpeaking(false);
-      });
-    }
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      
+      // Re-fetch voices if list is empty
+      let currentVoices = voices;
+      if (currentVoices.length === 0) {
+        currentVoices = synth.getVoices();
+        setVoices(currentVoices);
+      }
 
-    utterance.onend = () => {
-      if (!ttsAutoNext) {
-        setIsSpeaking(false);
-        if (silentAudioRef.current) silentAudioRef.current.pause();
-        if (wakeLockRef.current) {
-          wakeLockRef.current.release().then(() => {
-            wakeLockRef.current = null;
-          });
-        }
-      } else {
-        const nav = getNavigation();
-        if (nav.next) {
-          fetchNovel(nav.next.url);
-        } else {
+      const viVoice = currentVoices.find(v => v.lang.includes('vi')) || 
+                    currentVoices.find(v => v.lang.startsWith('vi'));
+      
+      if (viVoice) {
+        utterance.voice = viVoice;
+      }
+      
+      utterance.lang = 'vi-VN';
+      utterance.rate = ttsRate;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+
+      utterance.onstart = () => {
+        setIsSpeaking(true);
+      };
+
+      utterance.onend = () => {
+        if (!ttsAutoNext) {
           setIsSpeaking(false);
           if (silentAudioRef.current) silentAudioRef.current.pause();
+          if (wakeLockRef.current) {
+            wakeLockRef.current.release().then(() => {
+              wakeLockRef.current = null;
+            });
+          }
+        } else {
+          const nav = getNavigation();
+          if (nav.next) {
+            fetchNovel(nav.next.url);
+          } else {
+            setIsSpeaking(false);
+            if (silentAudioRef.current) silentAudioRef.current.pause();
+          }
         }
+      };
+
+      utterance.onerror = (event) => {
+        console.error("TTS Error:", event);
+        setIsSpeaking(false);
+        if (silentAudioRef.current) silentAudioRef.current.pause();
+      };
+      
+      utteranceRef.current = utterance;
+
+      // Small delay for Android to process cancel()
+      setTimeout(() => {
+        synth.speak(utterance);
+      }, 20);
+
+      // Setup Media Session
+      if ('mediaSession' in navigator) {
+        (navigator as any).mediaSession.metadata = new window.MediaMetadata({
+          title: novelData?.title || 'Đang đọc truyện',
+          artist: 'TrungVăn Dịch',
+          album: 'Audiobook',
+          artwork: [{ src: 'https://picsum.photos/seed/book/512/512', sizes: '512x512', type: 'image/png' }]
+        });
+
+        (navigator as any).mediaSession.setActionHandler('pause', () => {
+          synth.pause();
+          setIsSpeaking(false);
+        });
+        (navigator as any).mediaSession.setActionHandler('play', () => {
+          synth.resume();
+          setIsSpeaking(true);
+        });
       }
-    };
-    utterance.onerror = () => {
+
+      // Wake Lock
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+        } catch (err) {}
+      }
+
+    } catch (error) {
+      console.error("TTS Toggle Error:", error);
       setIsSpeaking(false);
-      if (silentAudioRef.current) silentAudioRef.current.pause();
-    };
+    }
   };
 
   const getNavigation = () => {
