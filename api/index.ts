@@ -30,6 +30,9 @@ const userAgents = [
 
 const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
   const urlObj = new URL(targetUrl);
+  // Simulate a random IP to try and bypass simple IP filters
+  const randomIp = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+  
   return {
     "User-Agent": userAgents[retryCount % userAgents.length],
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -37,6 +40,8 @@ const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "Referer": urlObj.origin + "/",
+    "X-Forwarded-For": randomIp,
+    "X-Real-IP": randomIp,
     "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
@@ -44,7 +49,8 @@ const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "same-origin",
     "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1"
+    "Upgrade-Insecure-Requests": "1",
+    "Cookie": `__cf_bm=random_${Math.random().toString(36).substring(7)};` // Fake Cloudflare cookie hint
   };
 };
 
@@ -103,23 +109,33 @@ app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
   try {
     const response = await fetchWithRetry(targetUrl);
 
-    const contentType = response.headers["content-type"] || "";
-    let charset = "utf-8";
+    const buffer = Buffer.from(response.data);
     
+    // Improved charset detection
+    let charset = "utf-8";
+    const contentType = response.headers["content-type"] || "";
     const charsetMatch = contentType.toString().match(/charset=([^;]+)/i);
+    
     if (charsetMatch) {
       charset = charsetMatch[1].toLowerCase();
     } else {
-      const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba"];
+      // Check common GBK sites
+      const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
       if (gbkSites.some(site => targetUrl.includes(site))) {
         charset = "gbk";
+      } else {
+        // Try to detect from buffer by looking for meta tag
+        const tempHtml = buffer.toString("ascii");
+        const metaMatch = tempHtml.match(/<meta[^>]*charset=["']?([^"'>\s]+)["']?/i);
+        if (metaMatch) {
+          charset = metaMatch[1].toLowerCase();
+        }
       }
     }
 
-    const buffer = Buffer.from(response.data);
     let html = "";
     try {
-      html = iconv.decode(buffer, charset);
+      html = iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
     } catch (e) {
       html = iconv.decode(buffer, "utf-8");
     }
@@ -180,20 +196,34 @@ app.post("/api/novel-info", async (req, res) => {
   if (!targetUrl.startsWith("http")) targetUrl = "https://" + targetUrl;
 
   try {
-    const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba"];
-    const isGBK = gbkSites.some(site => targetUrl.includes(site));
+    const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
+    const isGBKHint = gbkSites.some(site => targetUrl.includes(site));
 
     const fetchPage = async (u: string) => {
       const resp = await fetchWithRetry(u);
-      return iconv.decode(Buffer.from(resp.data), isGBK ? "gbk" : "utf-8");
+      const buffer = Buffer.from(resp.data);
+      
+      let charset = isGBKHint ? "gbk" : "utf-8";
+      const contentType = resp.headers["content-type"] || "";
+      const charsetMatch = contentType.toString().match(/charset=([^;]+)/i);
+      
+      if (charsetMatch) {
+        charset = charsetMatch[1].toLowerCase();
+      } else {
+        const tempHtml = buffer.toString("ascii");
+        const metaMatch = tempHtml.match(/<meta[^>]*charset=["']?([^"'>\s]+)["']?/i);
+        if (metaMatch) charset = metaMatch[1].toLowerCase();
+      }
+      
+      return iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
     };
 
     let html = await fetchPage(targetUrl);
     let $ = cheerio.load(html);
 
-    const isChapterPage = targetUrl.includes("/txt/") || $(".read-content").length > 0 || $("#content").length > 0;
+    const isChapterPage = targetUrl.includes("/txt/") || targetUrl.includes(".html") || $(".read-content").length > 0 || $("#content").length > 0;
     if (isChapterPage) {
-      const tocLink = $("a:contains('目录'), a:contains('返回书页'), a:contains('返回目录')").first().attr("href");
+      const tocLink = $("a:contains('目录'), a:contains('返回书页'), a:contains('返回目录'), a:contains('全文阅读')").first().attr("href");
       if (tocLink) {
         targetUrl = new URL(tocLink, targetUrl).href;
         html = await fetchPage(targetUrl);
@@ -201,10 +231,10 @@ app.post("/api/novel-info", async (req, res) => {
       }
     }
 
-    let title = $("h1").first().text().trim() || $(".bookname h1").text().trim();
-    let author = $(".author, .writer, [itemprop='author'], .info i:contains('作者')").first().text().replace(/作者[:：]/, "").trim();
-    let description = $(".description, .intro, #intro, [itemprop='description'], .nav_desc").first().text().trim();
-    let cover = $(".cover img, .book-img img, [itemprop='image'], .bookimg img").first().attr("src");
+    let title = $("h1").first().text().trim() || $(".bookname h1").text().trim() || $("title").text().split("_")[0].trim();
+    let author = $(".author, .writer, [itemprop='author'], .info i:contains('作者'), #info p:contains('作者')").first().text().replace(/作者[:：]/, "").trim();
+    let description = $(".description, .intro, #intro, [itemprop='description'], .nav_desc, #content:not(:has(a))").first().text().trim();
+    let cover = $(".cover img, .book-img img, [itemprop='image'], .bookimg img, #fmimg img").first().attr("src");
     
     if (cover && !cover.startsWith("http")) {
       cover = new URL(cover, targetUrl).href;
@@ -213,7 +243,8 @@ app.post("/api/novel-info", async (req, res) => {
     const chapters: { title: string; url: string }[] = [];
     const chapterSelectors = [
       "ul.mu_uul li a", ".chapter-list a", "#list a", ".book-mulu a", 
-      ".catalog a", "ul.list-charts a", ".quanshu-list a", ".box_con #list dl dd a"
+      ".catalog a", "ul.list-charts a", ".quanshu-list a", ".box_con #list dl dd a",
+      ".centent a", "td.ccss a", ".mainbody a"
     ];
 
     for (const selector of chapterSelectors) {
