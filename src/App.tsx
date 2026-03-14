@@ -84,23 +84,16 @@ export default function App() {
   const [readerTheme, setReaderTheme] = useState<'light' | 'dark' | 'sepia' | 'slate'>('light');
   const [readerFont, setReaderFont] = useState<'serif' | 'sans' | 'mono' | 'reading'>('reading');
   const [readerFontSize, setReaderFontSize] = useState(18);
-  const [ttsRate, setTtsRate] = useState(1.0);
   const [ttsAutoNext, setTtsAutoNext] = useState(false);
-  const [ttsChunks, setTtsChunks] = useState<string[]>([]);
-  const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [showReaderSettings, setShowReaderSettings] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const heartbeatRef = useRef<any>(null);
   const [userApiKey, setUserApiKey] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('');
   
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const wakeLockRef = useRef<any>(null);
   const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Load data from localStorage
   useEffect(() => {
@@ -116,25 +109,10 @@ export default function App() {
     const savedKey = localStorage.getItem('gemini_api_key');
     if (savedKey) setUserApiKey(savedKey);
 
-    const savedVoice = localStorage.getItem('tts_voice_uri');
-    if (savedVoice) setSelectedVoiceURI(savedVoice);
-
     fetch('/api/health')
       .then(res => res.json())
       .then(data => console.log("Backend health:", data))
       .catch(err => console.error("Backend health check failed:", err));
-
-    // Load voices for TTS
-    const loadVoices = () => {
-      if (synth) {
-        const availableVoices = synth.getVoices();
-        setVoices(availableVoices);
-      }
-    };
-    loadVoices();
-    if (synth && synth.onvoiceschanged !== undefined) {
-      synth.onvoiceschanged = loadVoices;
-    }
   }, []);
 
   const saveToLibrary = (novel: Novel) => {
@@ -410,30 +388,13 @@ export default function App() {
   const toggleSpeak = () => {
     const hasNativeBridge = !!(window as any).AndroidTTS;
     
-    if (!synth && !hasNativeBridge) {
-      alert("Trình duyệt của bạn không hỗ trợ phát giọng nói.");
+    if (!hasNativeBridge) {
+      alert("Tính năng đọc chỉ hỗ trợ trên ứng dụng Android.");
       return;
     }
 
     if (isSpeaking) {
-      if (hasNativeBridge) {
-        try {
-          (window as any).AndroidTTS.stop();
-        } catch (e) {}
-      }
-      
-      if (synth) synth.cancel();
-      if (silentAudioRef.current) silentAudioRef.current.pause();
-      if (wakeLockRef.current) {
-        try {
-          wakeLockRef.current.release().then(() => {
-            wakeLockRef.current = null;
-          }).catch(() => {});
-        } catch (e) {}
-      }
-      setIsSpeaking(false);
-      setCurrentChunkIndex(0);
-      setTtsChunks([]);
+      stopSpeaking();
       return;
     }
 
@@ -443,12 +404,7 @@ export default function App() {
     }
 
     try {
-      // Play silent audio immediately to establish audio context while user is interacting
-      if (silentAudioRef.current) {
-        silentAudioRef.current.play().catch(() => {});
-      }
-
-      // Clean text
+      // Clean text for Android processing
       const cleanText = translatedContent
         .replace(/[#*`]/g, '')
         .replace(/\[.*?\]\(.*?\)/g, '')
@@ -457,145 +413,14 @@ export default function App() {
 
       if (!cleanText) return;
 
-      // Split text into chunks (approx 2000 chars each, breaking at sentences)
-      const sentences = cleanText.match(/[^.!?]+[.!?]+|\s*[^.!?]+/g) || [cleanText];
-      const chunks: string[] = [];
-      let currentChunk = "";
-
-      sentences.forEach(sentence => {
-        if ((currentChunk + sentence).length < 2000) {
-          currentChunk += sentence;
-        } else {
-          if (currentChunk) chunks.push(currentChunk.trim());
-          currentChunk = sentence;
-        }
-      });
-      if (currentChunk) chunks.push(currentChunk.trim());
-
-      if (chunks.length === 0) return;
-
-      setTtsChunks(chunks);
-      setCurrentChunkIndex(0);
-      setIsSpeaking(true);
-
-      // Start speaking the first chunk
-      speakChunk(0, chunks);
-
-      // Setup Media Session
-      if ('mediaSession' in navigator) {
-        (navigator as any).mediaSession.metadata = new window.MediaMetadata({
-          title: novelData?.title || 'Đang đọc truyện',
-          artist: 'TrungVăn Dịch',
-          album: 'Audiobook',
-          artwork: [{ src: 'https://picsum.photos/seed/book/512/512', sizes: '512x512', type: 'image/png' }]
-        });
-
-        (navigator as any).mediaSession.setActionHandler('pause', () => {
-          synth.pause();
-          setIsSpeaking(false);
-        });
-        (navigator as any).mediaSession.setActionHandler('play', () => {
-          synth.resume();
-          setIsSpeaking(true);
-        });
-        (navigator as any).mediaSession.setActionHandler('nexttrack', () => {
-          const nav = getNavigation();
-          if (nav.next) fetchNovel(nav.next.url);
-        });
-        (navigator as any).mediaSession.setActionHandler('previoustrack', () => {
-          const nav = getNavigation();
-          if (nav.prev) fetchNovel(nav.prev.url);
-        });
+      if ((window as any).AndroidTTS) {
+        (window as any).AndroidTTS.speak(cleanText);
+        setIsSpeaking(true);
       }
-
     } catch (error) {
-      console.error("TTS Toggle Error:", error);
+      console.error("TTS Error:", error);
       setIsSpeaking(false);
     }
-  };
-
-  const speakChunk = (index: number, chunks: string[]) => {
-    // 1. Ưu tiên giải pháp Android Native Bridge (Theo đề xuất của bạn)
-    if ((window as any).AndroidTTS) {
-      try {
-        const fullText = chunks.slice(index).join(" ");
-        (window as any).AndroidTTS.speak(fullText);
-        setIsSpeaking(true);
-        return;
-      } catch (e) {
-        console.error("Native Bridge Error:", e);
-      }
-    }
-
-    // 2. Dự phòng cho trình duyệt Web chuẩn
-    if (!synth || index >= chunks.length) {
-      // Finished all chunks
-      if (ttsAutoNext) {
-        const nav = getNavigation();
-        if (nav.next) {
-          fetchNovel(nav.next.url);
-        } else {
-          stopSpeaking();
-        }
-      } else {
-        stopSpeaking();
-      }
-      return;
-    }
-
-    setCurrentChunkIndex(index);
-    const utterance = new SpeechSynthesisUtterance(chunks[index]);
-    
-    // Voice selection
-    let currentVoices = voices;
-    if (currentVoices.length === 0) {
-      currentVoices = synth.getVoices();
-      setVoices(currentVoices);
-    }
-
-    const viVoice = currentVoices.find(v => v.voiceURI === selectedVoiceURI) ||
-                  currentVoices.find(v => v.lang.includes('vi')) || 
-                  currentVoices.find(v => v.lang.startsWith('vi'));
-    
-    if (viVoice) utterance.voice = viVoice;
-    utterance.lang = 'vi-VN';
-    utterance.rate = ttsRate;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
-
-    utterance.onstart = () => {
-      // Heartbeat to prevent tab sleep
-      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
-      heartbeatRef.current = setInterval(() => {
-        if (window.speechSynthesis.paused) {
-          window.speechSynthesis.resume();
-        }
-      }, 5000);
-
-      if ('wakeLock' in navigator && !wakeLockRef.current) {
-        (navigator as any).wakeLock.request('screen').then((lock: any) => {
-          wakeLockRef.current = lock;
-        }).catch(() => {});
-      }
-    };
-
-    utterance.onend = () => {
-      speakChunk(index + 1, chunks);
-    };
-
-    utterance.onerror = (event) => {
-      console.error("TTS Chunk Error:", event);
-      // Try next chunk anyway or stop
-      if (index < chunks.length - 1) {
-        speakChunk(index + 1, chunks);
-      } else {
-        stopSpeaking();
-      }
-    };
-
-    synth.cancel();
-    synth.speak(utterance);
-    if (synth.paused) synth.resume();
   };
 
   const stopSpeaking = () => {
@@ -604,21 +429,9 @@ export default function App() {
         (window as any).AndroidTTS.stop();
       } catch (e) {}
     }
-    if (synth) synth.cancel();
-    if (heartbeatRef.current) {
-      clearInterval(heartbeatRef.current);
-      heartbeatRef.current = null;
-    }
     setIsSpeaking(false);
-    setCurrentChunkIndex(0);
-    setTtsChunks([]);
-    if (silentAudioRef.current) silentAudioRef.current.pause();
-    if (wakeLockRef.current) {
-      wakeLockRef.current.release().then(() => {
-        wakeLockRef.current = null;
-      }).catch(() => {});
-    }
   };
+
 
   const getNavigation = () => {
     if (!novelData) return { prev: null, next: null };
