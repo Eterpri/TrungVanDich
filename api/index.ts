@@ -20,6 +20,70 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+const userAgents = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+  "Mozilla/5.0 (AppleWebKit/537.36; Chrome/122.0.0.0; Safari/537.36; Edge/122.0.0.0)"
+];
+
+const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
+  const urlObj = new URL(targetUrl);
+  return {
+    "User-Agent": userAgents[retryCount % userAgents.length],
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,vi;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": urlObj.origin + "/",
+    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1"
+  };
+};
+
+const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
+  const maxRetries = 3;
+  let lastError: any = null;
+
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      const response = await axios.get(targetUrl, {
+        responseType: "arraybuffer",
+        headers: getScrapingHeaders(targetUrl, i),
+        timeout: 15000,
+        maxRedirects: 5,
+        validateStatus: (status) => status < 500,
+        ...options
+      });
+
+      if (response.status === 403) {
+        throw new Error("403 Forbidden - Website is blocking the request. This might be due to anti-scraping protection.");
+      }
+
+      if (response.status === 429) {
+        throw new Error("429 Too Many Requests - Website is rate-limiting.");
+      }
+
+      return response;
+    } catch (error: any) {
+      lastError = error;
+      console.error(`Attempt ${i + 1} failed for ${targetUrl}: ${error.message}`);
+      if (i < maxRetries) {
+        // Wait a bit before retry, increasing delay
+        await new Promise(resolve => setTimeout(resolve, 1500 * (i + 1)));
+      }
+    }
+  }
+  throw lastError;
+};
+
 // API to fetch and parse Chinese novel content
 app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
   const { url } = req.body;
@@ -37,19 +101,7 @@ app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
   }
 
   try {
-    const response = await axios.get(targetUrl, {
-      responseType: "arraybuffer",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-        "Referer": new URL(targetUrl).origin,
-      },
-      timeout: 20000,
-      maxRedirects: 5,
-      validateStatus: (status) => status < 500, 
-    });
+    const response = await fetchWithRetry(targetUrl);
 
     const contentType = response.headers["content-type"] || "";
     let charset = "utf-8";
@@ -132,13 +184,7 @@ app.post("/api/novel-info", async (req, res) => {
     const isGBK = gbkSites.some(site => targetUrl.includes(site));
 
     const fetchPage = async (u: string) => {
-      const resp = await axios.get(u, {
-        responseType: "arraybuffer",
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        },
-        timeout: 15000,
-      });
+      const resp = await fetchWithRetry(u);
       return iconv.decode(Buffer.from(resp.data), isGBK ? "gbk" : "utf-8");
     };
 
@@ -227,11 +273,7 @@ app.post("/api/scrape-chapters", async (req, res) => {
       const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba"];
       const isGBK = gbkSites.some(site => url.includes(site));
 
-      const response = await axios.get(url, {
-        responseType: "arraybuffer",
-        headers: { "User-Agent": "Mozilla/5.0" },
-        timeout: 10000,
-      });
+      const response = await fetchWithRetry(url);
       const html = iconv.decode(Buffer.from(response.data), isGBK ? "gbk" : "utf-8");
       const $ = cheerio.load(html);
       

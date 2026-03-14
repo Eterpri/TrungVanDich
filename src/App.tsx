@@ -152,7 +152,12 @@ export default function App() {
       }
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Lỗi lấy thông tin truyện');
+      if (!response.ok) {
+        if (response.status === 403 || (data.error && data.error.includes('403'))) {
+          throw new Error('Trang web đang chặn yêu cầu (Lỗi 403). Có thể do hệ thống bảo mật của họ. Vui lòng thử lại sau hoặc dùng link khác.');
+        }
+        throw new Error(data.error || 'Lỗi lấy thông tin truyện');
+      }
       
       const novel: Novel = { ...data, url: targetUrl, timestamp: Date.now() };
       setSelectedNovel(novel);
@@ -261,7 +266,12 @@ export default function App() {
       }
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Lỗi tải truyện');
+      if (!response.ok) {
+        if (response.status === 403 || (data.error && data.error.includes('403'))) {
+          throw new Error('Trang web đang chặn yêu cầu (Lỗi 403). Vui lòng thử lại sau.');
+        }
+        throw new Error(data.error || 'Lỗi tải truyện');
+      }
       
       setNovelData(data);
       saveToHistory(data.title || 'Truyện không tên', targetUrl);
