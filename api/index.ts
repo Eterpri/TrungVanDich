@@ -58,20 +58,21 @@ const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
 };
 
 const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
-  const maxRetries = 3;
+  const maxRetries = 4;
   let lastError: any = null;
   let currentUrl = targetUrl;
 
-  // Mirror fallback for 69shuba if blocked
+  // Mirror fallback for 69shuba if blocked or down
   const is69Shu = targetUrl.includes("69shu");
-  const mirrors = ["69shuba.cx", "69shuba.pro", "69shuba.li", "69shuba.me", "69shuba.com"];
+  // Updated mirrors list with more reliable ones
+  const mirrors = ["69shuba.cx", "69shuba.pro", "www.69shuba.pro", "69shuba.top", "www.69shuba.top", "69shuba.com", "www.69shuba.com"];
 
   for (let i = 0; i <= maxRetries; i++) {
     try {
       const response = await axios.get(currentUrl, {
         responseType: "arraybuffer",
         headers: getScrapingHeaders(currentUrl, i),
-        timeout: 15000,
+        timeout: 12000,
         maxRedirects: 5,
         validateStatus: (status) => status < 500,
         ...options
@@ -79,14 +80,13 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
 
       if (response.status === 403) {
         if (is69Shu && i < mirrors.length) {
-          // Try a different mirror
           const urlObj = new URL(currentUrl);
           const nextMirror = mirrors[i % mirrors.length];
           if (!urlObj.host.includes(nextMirror)) {
             console.log(`403 on ${urlObj.host}, trying mirror ${nextMirror}`);
             urlObj.host = nextMirror;
             currentUrl = urlObj.href;
-            continue; // Retry immediately with new mirror
+            continue; 
           }
         }
         throw new Error("403 Forbidden - Website is blocking the request.");
@@ -99,7 +99,20 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
       return response;
     } catch (error: any) {
       lastError = error;
-      console.error(`Attempt ${i + 1} failed for ${currentUrl}: ${error.message}`);
+      const isNetworkError = error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED' || error.message.includes('timeout');
+      
+      console.error(`Attempt ${i + 1} failed for ${currentUrl}: ${error.message} (Code: ${error.code})`);
+      
+      if (is69Shu && isNetworkError && i < mirrors.length) {
+        const urlObj = new URL(currentUrl);
+        const nextMirror = mirrors[(i + 1) % mirrors.length];
+        console.log(`Network error on ${urlObj.host}, switching to mirror ${nextMirror}`);
+        urlObj.host = nextMirror;
+        currentUrl = urlObj.href;
+        // No delay for mirror switch on network error
+        continue;
+      }
+
       if (i < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
       }
@@ -270,9 +283,10 @@ app.post("/api/novel-info", async (req, res) => {
     let html = await fetchPage(targetUrl);
     let $ = cheerio.load(html);
 
-    const isChapterPage = targetUrl.includes("/txt/") || targetUrl.includes(".html") || $(".read-content").length > 0 || $("#content").length > 0;
+    const isChapterPage = targetUrl.includes("/txt/") || targetUrl.includes(".html") || $(".read-content").length > 0 || $("#content").length > 0 || $(".txtnav").length > 0;
     if (isChapterPage) {
-      const tocLink = $("a:contains('目录'), a:contains('返回书页'), a:contains('返回目录'), a:contains('全文阅读')").first().attr("href");
+      // Try to find book page link on 69shuba and others
+      const tocLink = $("a:contains('目录'), a:contains('返回书页'), a:contains('返回目录'), a:contains('全文阅读'), a:contains('书页')").first().attr("href");
       if (tocLink) {
         targetUrl = new URL(tocLink, targetUrl).href;
         html = await fetchPage(targetUrl);
@@ -281,9 +295,9 @@ app.post("/api/novel-info", async (req, res) => {
     }
 
     let title = $("h1").first().text().trim() || $(".bookname h1").text().trim() || $("title").text().split("_")[0].trim();
-    let author = $(".author, .writer, [itemprop='author'], .info i:contains('作者'), #info p:contains('作者')").first().text().replace(/作者[:：]/, "").trim();
+    let author = $(".author, .writer, [itemprop='author'], .info i:contains('作者'), #info p:contains('作者'), .booknav2 p:contains('作者')").first().text().replace(/作者[:：]/, "").trim();
     let description = $(".description, .intro, #intro, [itemprop='description'], .nav_desc, #content:not(:has(a))").first().text().trim();
-    let cover = $(".cover img, .book-img img, [itemprop='image'], .bookimg img, #fmimg img").first().attr("src");
+    let cover = $(".cover img, .book-img img, [itemprop='image'], .bookimg img, #fmimg img, .booknav2 img").first().attr("src");
     
     if (cover && !cover.startsWith("http")) {
       cover = new URL(cover, targetUrl).href;
@@ -291,7 +305,7 @@ app.post("/api/novel-info", async (req, res) => {
 
     const chapters: { title: string; url: string }[] = [];
     const chapterSelectors = [
-      "ul.mu_uul li a", ".chapter-list a", "#list a", ".book-mulu a", 
+      ".catalog ul li a", "ul.mu_uul li a", ".chapter-list a", "#list a", ".book-mulu a", 
       ".catalog a", "ul.list-charts a", ".quanshu-list a", ".box_con #list dl dd a",
       ".centent a", "td.ccss a", ".mainbody a"
     ];
