@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { 
   Search, 
   BookOpen, 
@@ -26,7 +25,8 @@ import {
   Palette,
   Minus,
   Plus,
-  Zap
+  Zap,
+  Key
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
@@ -36,9 +36,6 @@ import { twMerge } from 'tailwind-merge';
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
-
-// Initialize Gemini
-const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 interface HistoryItem {
   url: string;
@@ -87,6 +84,8 @@ export default function App() {
   const [ttsRate, setTtsRate] = useState(1.0);
   const [showReaderSettings, setShowReaderSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [userApiKey, setUserApiKey] = useState('');
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   
   const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -101,6 +100,9 @@ export default function App() {
 
     const savedCache = localStorage.getItem('novel_cache');
     if (savedCache) setPreTranslated(JSON.parse(savedCache));
+
+    const savedKey = localStorage.getItem('gemini_api_key');
+    if (savedKey) setUserApiKey(savedKey);
 
     fetch('/api/health')
       .then(res => res.json())
@@ -321,15 +323,19 @@ export default function App() {
       tempDiv.innerHTML = textToTranslate;
       const cleanText = tempDiv.innerText;
 
-      const response = await genAI.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: cleanText,
-        config: {
-          systemInstruction: "Bạn là một dịch giả chuyên nghiệp từ tiếng Trung sang tiếng Việt. Hãy dịch nội dung chương truyện sau đây một cách mượt mà, thuần Việt, giữ đúng ngữ cảnh kiếm hiệp/tiên hiệp/ngôn tình. Loại bỏ các đoạn quảng cáo hoặc rác nếu có. Trả về định dạng Markdown."
-        }
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          text: cleanText,
+          apiKey: userApiKey || undefined
+        }),
       });
 
-      const result = response.text || '';
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Lỗi dịch thuật');
+
+      const result = data.text || '';
       if (!isSilent) setTranslatedContent(result);
       return result;
     } catch (err: any) {
@@ -446,6 +452,13 @@ export default function App() {
               className={cn("px-4 py-2 rounded-xl text-xs font-bold transition-all", activeTab === 'library' ? "bg-white text-orange-600 shadow-sm" : "text-black/40 hover:text-black")}
             >
               Tủ sách
+            </button>
+            <button 
+              onClick={() => setShowApiKeyModal(true)}
+              className="p-2 text-black/40 hover:text-black transition-all"
+              title="Cài đặt API Key"
+            >
+              <Key size={18} />
             </button>
           </nav>
         </div>
@@ -763,6 +776,62 @@ export default function App() {
                 <p className="text-sm">Quét link truyện để lưu vào tủ sách</p>
               </div>
             )}
+            </div>
+          </div>
+        )}
+
+        {/* API Key Modal */}
+        {showApiKeyModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+            <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-200">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                  <Key className="text-orange-600" /> Cấu hình API Key
+                </h2>
+                <button onClick={() => setShowApiKeyModal(false)} className="text-black/20 hover:text-black">
+                  <Trash2 size={20} />
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <p className="text-sm text-black/60">
+                  Nhập Gemini API Key của bạn để sử dụng dịch thuật. Key sẽ được lưu an toàn trong trình duyệt của bạn.
+                </p>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-black/40">Gemini API Key</label>
+                  <input 
+                    type="password"
+                    value={userApiKey}
+                    onChange={(e) => setUserApiKey(e.target.value)}
+                    placeholder="Dán API Key tại đây..."
+                    className="w-full px-4 py-3 rounded-2xl bg-black/5 border-none focus:ring-2 focus:ring-orange-500 transition-all"
+                  />
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <button 
+                    onClick={() => {
+                      localStorage.setItem('gemini_api_key', userApiKey);
+                      setShowApiKeyModal(false);
+                    }}
+                    className="flex-1 bg-orange-600 text-white py-3 rounded-2xl font-bold hover:bg-orange-700 transition-all shadow-lg shadow-orange-500/20"
+                  >
+                    Lưu cấu hình
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setUserApiKey('');
+                      localStorage.removeItem('gemini_api_key');
+                      setShowApiKeyModal(false);
+                    }}
+                    className="px-6 py-3 rounded-2xl bg-black/5 font-bold hover:bg-black/10 transition-all"
+                  >
+                    Xóa
+                  </button>
+                </div>
+                <p className="text-[10px] text-center text-black/30">
+                  Nếu bỏ trống, ứng dụng sẽ thử dùng Key hệ thống (nếu có).
+                </p>
+              </div>
             </div>
           </div>
         )}

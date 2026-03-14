@@ -4,13 +4,21 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
 import path from "path";
+import { GoogleGenAI } from "@google/genai";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Initialize Gemini if key is provided
+  const serverApiKey = process.env.GEMINI_API_KEY;
+  
   // Middleware
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
   
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -215,6 +223,37 @@ async function startServer() {
       res.json({ title, author, description, cover, chapters: chapters.slice(0, 1000) });
     } catch (error: any) {
       res.status(500).json({ error: `Lỗi lấy thông tin truyện: ${error.message}` });
+    }
+  });
+
+  // API to translate content using Gemini
+  app.post("/api/translate", async (req, res) => {
+    const { text, apiKey: userApiKey } = req.body;
+    
+    if (!text) return res.status(400).json({ error: "Text is required" });
+    
+    const apiKey = userApiKey || serverApiKey;
+    
+    if (!apiKey) {
+      return res.status(401).json({ 
+        error: "Thiếu API Key. Vui lòng cấu hình GEMINI_API_KEY trong biến môi trường hoặc nhập key cá nhân trong cài đặt." 
+      });
+    }
+
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: text,
+        config: {
+          systemInstruction: "Bạn là một dịch giả chuyên nghiệp từ tiếng Trung sang tiếng Việt. Hãy dịch nội dung chương truyện sau đây một cách mượt mà, thuần Việt, giữ đúng ngữ cảnh kiếm hiệp/tiên hiệp/ngôn tình. Loại bỏ các đoạn quảng cáo hoặc rác nếu có. Trả về định dạng Markdown."
+        }
+      });
+
+      res.json({ text: response.text });
+    } catch (error: any) {
+      console.error("Translation error:", error.message);
+      res.status(500).json({ error: `Lỗi dịch thuật: ${error.message}` });
     }
   });
 
