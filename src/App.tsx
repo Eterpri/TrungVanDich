@@ -83,6 +83,7 @@ export default function App() {
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [ttsRate, setTtsRate] = useState(1.0);
   const [showReaderSettings, setShowReaderSettings] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [userApiKey, setUserApiKey] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
@@ -661,6 +662,17 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-3">
                       <button 
+                        onClick={() => setShowOriginal(!showOriginal)}
+                        className={cn(
+                          "p-2.5 rounded-2xl transition-all flex items-center gap-2 text-xs font-bold",
+                          showOriginal ? "bg-orange-600 text-white" : "bg-black/5 text-black hover:bg-black/10"
+                        )}
+                        title={showOriginal ? "Ẩn nội dung gốc" : "Hiện nội dung gốc"}
+                      >
+                        <Type size={16} />
+                        {showOriginal ? "Ẩn gốc" : "Hiện gốc"}
+                      </button>
+                      <button 
                         onClick={() => setShowReaderSettings(!showReaderSettings)}
                         className={cn(
                           "p-2.5 rounded-2xl transition-all flex items-center gap-2",
@@ -705,6 +717,13 @@ export default function App() {
                       )}
                       style={{ fontSize: `${readerFontSize}px` }}
                       >
+                        {showOriginal && novelData.content && (
+                          <div className="mb-8 p-6 bg-black/5 rounded-2xl border border-black/5 font-sans text-sm opacity-60">
+                            <h4 className="text-[10px] uppercase font-bold text-black/40 mb-4 tracking-widest">Nội dung gốc (Tiếng Trung)</h4>
+                            <div dangerouslySetInnerHTML={{ __html: novelData.content }} />
+                          </div>
+                        )}
+                        
                         {translatedContent ? (
                           <div className="markdown-body">
                             <ReactMarkdown>{translatedContent}</ReactMarkdown>

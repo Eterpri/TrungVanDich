@@ -37,9 +37,12 @@ const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
     "User-Agent": userAgents[retryCount % userAgents.length],
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,vi;q=0.7",
+    "Accept-Encoding": "gzip, deflate",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "Referer": urlObj.origin + "/",
+    "Host": urlObj.host,
+    "Connection": "keep-alive",
     "X-Forwarded-For": randomIp,
     "X-Real-IP": randomIp,
     "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
@@ -57,12 +60,17 @@ const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
 const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
   const maxRetries = 3;
   let lastError: any = null;
+  let currentUrl = targetUrl;
+
+  // Mirror fallback for 69shuba if blocked
+  const is69Shu = targetUrl.includes("69shu");
+  const mirrors = ["69shuba.cx", "69shuba.pro", "69shuba.li", "69shuba.me", "69shuba.com"];
 
   for (let i = 0; i <= maxRetries; i++) {
     try {
-      const response = await axios.get(targetUrl, {
+      const response = await axios.get(currentUrl, {
         responseType: "arraybuffer",
-        headers: getScrapingHeaders(targetUrl, i),
+        headers: getScrapingHeaders(currentUrl, i),
         timeout: 15000,
         maxRedirects: 5,
         validateStatus: (status) => status < 500,
@@ -70,7 +78,18 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
       });
 
       if (response.status === 403) {
-        throw new Error("403 Forbidden - Website is blocking the request. This might be due to anti-scraping protection.");
+        if (is69Shu && i < mirrors.length) {
+          // Try a different mirror
+          const urlObj = new URL(currentUrl);
+          const nextMirror = mirrors[i % mirrors.length];
+          if (!urlObj.host.includes(nextMirror)) {
+            console.log(`403 on ${urlObj.host}, trying mirror ${nextMirror}`);
+            urlObj.host = nextMirror;
+            currentUrl = urlObj.href;
+            continue; // Retry immediately with new mirror
+          }
+        }
+        throw new Error("403 Forbidden - Website is blocking the request.");
       }
 
       if (response.status === 429) {
@@ -80,10 +99,9 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
       return response;
     } catch (error: any) {
       lastError = error;
-      console.error(`Attempt ${i + 1} failed for ${targetUrl}: ${error.message}`);
+      console.error(`Attempt ${i + 1} failed for ${currentUrl}: ${error.message}`);
       if (i < maxRetries) {
-        // Wait a bit before retry, increasing delay
-        await new Promise(resolve => setTimeout(resolve, 1500 * (i + 1)));
+        await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
       }
     }
   }
@@ -152,14 +170,45 @@ app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
     let content = "";
     const contentSelectors = [
       ".txtnav", "#content", ".content", ".read-content", "#txt", ".txt", 
-      ".post-content", ".article-content", "#chaptercontent", ".showtxt", ".chapter-content"
+      ".post-content", ".article-content", "#chaptercontent", ".showtxt", 
+      ".chapter-content", ".book-content", "#bookContent", "#htmlContent"
     ];
 
     for (const selector of contentSelectors) {
       const found = $(selector);
       if (found.length > 0) {
-        found.find("script, ins, .ads, .ad, .bottom-ad, a, .navigation, style, iframe").remove();
+        // Remove common garbage elements found in Chinese novel sites
+        found.find("script, ins, .ads, .ad, .bottom-ad, a, .navigation, style, iframe, .bottem2, .p_next, .p_prev, .header, .footer, .sidebar, #top_nav, #footer_nav").remove();
+        
+        // Remove tables that are likely navigation (usually have many links or specific text)
+        found.find("table").each((_, el) => {
+          const $el = $(el);
+          const text = $el.text();
+          if (text.includes("选择背景") || text.includes("字体大小") || $el.find("a").length > 5) {
+            $el.remove();
+          }
+        });
+        
+        // Specific cleaning for piaotia and similar sites that put nav inside content
+        found.contents().filter(function() {
+          if (this.type !== 'text') return false;
+          const text = this.data;
+          return (
+            text.includes("选择背景") || 
+            text.includes("字体大小") || 
+            text.includes("加入书架") ||
+            text.includes("投推荐票") ||
+            text.includes("上一页") ||
+            text.includes("下一页") ||
+            text.includes("返回书页")
+          );
+        }).remove();
+
         content = found.html() || "";
+        
+        // Normalize multiple BRs to double BRs for cleaner look
+        content = content.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>');
+        
         if (content.trim().length > 100) break;
       }
     }
