@@ -90,6 +90,7 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [userApiKey, setUserApiKey] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const wakeLockRef = useRef<any>(null);
@@ -114,6 +115,18 @@ export default function App() {
       .then(res => res.json())
       .then(data => console.log("Backend health:", data))
       .catch(err => console.error("Backend health check failed:", err));
+
+    // Load voices for TTS
+    const loadVoices = () => {
+      if (synth) {
+        const availableVoices = synth.getVoices();
+        setVoices(availableVoices);
+      }
+    };
+    loadVoices();
+    if (synth && synth.onvoiceschanged !== undefined) {
+      synth.onvoiceschanged = loadVoices;
+    }
   }, []);
 
   const saveToLibrary = (novel: Novel) => {
@@ -417,13 +430,26 @@ export default function App() {
       .replace(/\[.*?\]\(.*?\)/g, '');
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
+    
+    // Find best Vietnamese voice
+    const viVoice = voices.find(v => v.lang.includes('vi')) || 
+                  voices.find(v => v.lang.startsWith('vi'));
+    if (viVoice) {
+      utterance.voice = viVoice;
+    }
+    
     utterance.lang = 'vi-VN';
     utterance.rate = ttsRate;
     
     // Start speaking IMMEDIATELY to preserve user gesture
     utteranceRef.current = utterance;
     setIsSpeaking(true);
-    synth.speak(utterance);
+    
+    // Android fix: cancel any pending speech before starting new one
+    synth.cancel();
+    setTimeout(() => {
+      synth.speak(utterance);
+    }, 50);
 
     // Request Wake Lock and Media Session AFTER starting speech
     if ('wakeLock' in navigator) {
