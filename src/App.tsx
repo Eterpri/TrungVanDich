@@ -85,6 +85,8 @@ export default function App() {
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [ttsRate, setTtsRate] = useState(1.0);
   const [ttsAutoNext, setTtsAutoNext] = useState(false);
+  const [ttsChunks, setTtsChunks] = useState<string[]>([]);
+  const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [showReaderSettings, setShowReaderSettings] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -411,9 +413,7 @@ export default function App() {
 
     if (isSpeaking) {
       synth.cancel();
-      if (silentAudioRef.current) {
-        silentAudioRef.current.pause();
-      }
+      if (silentAudioRef.current) silentAudioRef.current.pause();
       if (wakeLockRef.current) {
         try {
           wakeLockRef.current.release().then(() => {
@@ -422,6 +422,8 @@ export default function App() {
         } catch (e) {}
       }
       setIsSpeaking(false);
+      setCurrentChunkIndex(0);
+      setTtsChunks([]);
       return;
     }
 
@@ -435,83 +437,34 @@ export default function App() {
       const cleanText = translatedContent
         .replace(/[#*`]/g, '')
         .replace(/\[.*?\]\(.*?\)/g, '')
+        .replace(/\s+/g, ' ')
         .trim();
 
       if (!cleanText) return;
 
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      
-      // Re-fetch voices if list is empty
-      let currentVoices = voices;
-      if (currentVoices.length === 0) {
-        currentVoices = synth.getVoices();
-        setVoices(currentVoices);
-      }
+      // Split text into chunks (approx 2000 chars each, breaking at sentences)
+      const sentences = cleanText.match(/[^.!?]+[.!?]+|\s*[^.!?]+/g) || [cleanText];
+      const chunks: string[] = [];
+      let currentChunk = "";
 
-      const viVoice = currentVoices.find(v => v.voiceURI === selectedVoiceURI) ||
-                    currentVoices.find(v => v.lang.includes('vi')) || 
-                    currentVoices.find(v => v.lang.startsWith('vi'));
-      
-      if (viVoice) {
-        utterance.voice = viVoice;
-      }
-      
-      utterance.lang = 'vi-VN';
-      utterance.rate = ttsRate;
-      utterance.pitch = 1.0;
-      utterance.volume = 1.0;
-
-      utterance.onstart = () => {
-        setIsSpeaking(true);
-        // Play silent audio immediately to keep process alive
-        if (silentAudioRef.current) {
-          silentAudioRef.current.play().catch(() => {});
-        }
-        
-        // Wake Lock
-        if ('wakeLock' in navigator) {
-          (navigator as any).wakeLock.request('screen').then((lock: any) => {
-            wakeLockRef.current = lock;
-          }).catch(() => {});
-        }
-      };
-
-      utterance.onend = () => {
-        if (!ttsAutoNext) {
-          setIsSpeaking(false);
-          if (silentAudioRef.current) silentAudioRef.current.pause();
-          if (wakeLockRef.current) {
-            wakeLockRef.current.release().then(() => {
-              wakeLockRef.current = null;
-            }).catch(() => {});
-          }
+      sentences.forEach(sentence => {
+        if ((currentChunk + sentence).length < 2000) {
+          currentChunk += sentence;
         } else {
-          const nav = getNavigation();
-          if (nav.next) {
-            fetchNovel(nav.next.url);
-          } else {
-            setIsSpeaking(false);
-            if (silentAudioRef.current) silentAudioRef.current.pause();
-          }
+          if (currentChunk) chunks.push(currentChunk.trim());
+          currentChunk = sentence;
         }
-      };
+      });
+      if (currentChunk) chunks.push(currentChunk.trim());
 
-      utterance.onerror = (event) => {
-        console.error("TTS Error:", event);
-        setIsSpeaking(false);
-        if (silentAudioRef.current) silentAudioRef.current.pause();
-      };
-      
-      utteranceRef.current = utterance;
+      if (chunks.length === 0) return;
 
-      // Android/Chrome fix: cancel and speak immediately
-      synth.cancel();
-      synth.speak(utterance);
-      
-      // Some Android browsers start in a paused state
-      if (synth.paused) {
-        synth.resume();
-      }
+      setTtsChunks(chunks);
+      setCurrentChunkIndex(0);
+      setIsSpeaking(true);
+
+      // Start speaking the first chunk
+      speakChunk(0, chunks);
 
       // Setup Media Session
       if ('mediaSession' in navigator) {
@@ -535,6 +488,84 @@ export default function App() {
     } catch (error) {
       console.error("TTS Toggle Error:", error);
       setIsSpeaking(false);
+    }
+  };
+
+  const speakChunk = (index: number, chunks: string[]) => {
+    if (!synth || index >= chunks.length) {
+      // Finished all chunks
+      if (ttsAutoNext) {
+        const nav = getNavigation();
+        if (nav.next) {
+          fetchNovel(nav.next.url);
+        } else {
+          stopSpeaking();
+        }
+      } else {
+        stopSpeaking();
+      }
+      return;
+    }
+
+    setCurrentChunkIndex(index);
+    const utterance = new SpeechSynthesisUtterance(chunks[index]);
+    
+    // Voice selection
+    let currentVoices = voices;
+    if (currentVoices.length === 0) {
+      currentVoices = synth.getVoices();
+      setVoices(currentVoices);
+    }
+
+    const viVoice = currentVoices.find(v => v.voiceURI === selectedVoiceURI) ||
+                  currentVoices.find(v => v.lang.includes('vi')) || 
+                  currentVoices.find(v => v.lang.startsWith('vi'));
+    
+    if (viVoice) utterance.voice = viVoice;
+    utterance.lang = 'vi-VN';
+    utterance.rate = ttsRate;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+
+    utterance.onstart = () => {
+      // Keep process alive
+      if (silentAudioRef.current) silentAudioRef.current.play().catch(() => {});
+      if ('wakeLock' in navigator && !wakeLockRef.current) {
+        (navigator as any).wakeLock.request('screen').then((lock: any) => {
+          wakeLockRef.current = lock;
+        }).catch(() => {});
+      }
+    };
+
+    utterance.onend = () => {
+      speakChunk(index + 1, chunks);
+    };
+
+    utterance.onerror = (event) => {
+      console.error("TTS Chunk Error:", event);
+      // Try next chunk anyway or stop
+      if (index < chunks.length - 1) {
+        speakChunk(index + 1, chunks);
+      } else {
+        stopSpeaking();
+      }
+    };
+
+    synth.cancel();
+    synth.speak(utterance);
+    if (synth.paused) synth.resume();
+  };
+
+  const stopSpeaking = () => {
+    if (synth) synth.cancel();
+    setIsSpeaking(false);
+    setCurrentChunkIndex(0);
+    setTtsChunks([]);
+    if (silentAudioRef.current) silentAudioRef.current.pause();
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release().then(() => {
+        wakeLockRef.current = null;
+      }).catch(() => {});
     }
   };
 
