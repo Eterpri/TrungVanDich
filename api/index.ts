@@ -138,38 +138,46 @@ app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
   }
 
   try {
-    const response = await fetchWithRetry(targetUrl);
+    const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
+    const isGBKHint = gbkSites.some(site => targetUrl.includes(site));
 
-    const buffer = Buffer.from(response.data);
-    
-    // Improved charset detection
-    let charset = "utf-8";
-    const contentType = response.headers["content-type"] || "";
-    const charsetMatch = contentType.toString().match(/charset=([^;]+)/i);
-    
-    if (charsetMatch) {
-      charset = charsetMatch[1].toLowerCase();
-    } else {
-      // Check common GBK sites
-      const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
-      if (gbkSites.some(site => targetUrl.includes(site))) {
-        charset = "gbk";
+    const fetchPage = async (u: string, depth: number = 0): Promise<{ html: string; charset: string }> => {
+      if (depth > 3) return { html: "", charset: "utf-8" };
+      
+      const response = await fetchWithRetry(u);
+      const buffer = Buffer.from(response.data);
+      
+      let charset = isGBKHint ? "gbk" : "utf-8";
+      const contentType = response.headers["content-type"] || "";
+      const charsetMatch = contentType.toString().match(/charset=([^;]+)/i);
+      
+      if (charsetMatch) {
+        charset = charsetMatch[1].toLowerCase();
       } else {
-        // Try to detect from buffer by looking for meta tag
         const tempHtml = buffer.toString("ascii");
         const metaMatch = tempHtml.match(/<meta[^>]*charset=["']?([^"'>\s]+)["']?/i);
-        if (metaMatch) {
-          charset = metaMatch[1].toLowerCase();
+        if (metaMatch) charset = metaMatch[1].toLowerCase();
+      }
+      
+      const decodedHtml = iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
+      
+      // Check for meta refresh redirect
+      const $temp = cheerio.load(decodedHtml);
+      const metaRefresh = $temp('meta[http-equiv="refresh"]').attr('content');
+      if (metaRefresh) {
+        const urlMatch = metaRefresh.match(/url=(.*)/i);
+        if (urlMatch && urlMatch[1]) {
+          let nextUrl = urlMatch[1].trim().replace(/['"]/g, '');
+          if (!nextUrl.startsWith("http")) nextUrl = new URL(nextUrl, u).href;
+          console.log(`Meta refresh detected in fetch-novel: ${u} -> ${nextUrl}`);
+          return fetchPage(nextUrl, depth + 1);
         }
       }
-    }
+      
+      return { html: decodedHtml, charset };
+    };
 
-    let html = "";
-    try {
-      html = iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
-    } catch (e) {
-      html = iconv.decode(buffer, "utf-8");
-    }
+    const { html, charset } = await fetchPage(targetUrl);
     
     if (!html || html.length < 10) {
       return res.status(500).json({ error: "Không thể giải mã nội dung trang web (Phản hồi trống)." });
@@ -257,11 +265,24 @@ app.post("/api/novel-info", async (req, res) => {
   let targetUrl = url.trim();
   if (!targetUrl.startsWith("http")) targetUrl = "https://" + targetUrl;
 
+  // Specific normalization for 69shuba to jump to book info page
+  if (targetUrl.includes("69shu")) {
+    const match = targetUrl.match(/\/txt\/(\d+)/);
+    if (match && match[1]) {
+      const bookId = match[1];
+      const urlObj = new URL(targetUrl);
+      targetUrl = `${urlObj.protocol}//${urlObj.host}/book/${bookId}.htm`;
+      console.log(`Normalized 69shuba URL to book info: ${targetUrl}`);
+    }
+  }
+
   try {
     const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
     const isGBKHint = gbkSites.some(site => targetUrl.includes(site));
 
-    const fetchPage = async (u: string) => {
+    const fetchPage = async (u: string, depth: number = 0): Promise<string> => {
+      if (depth > 3) return ""; // Prevent infinite loops
+      
       const resp = await fetchWithRetry(u);
       const buffer = Buffer.from(resp.data);
       
@@ -277,7 +298,22 @@ app.post("/api/novel-info", async (req, res) => {
         if (metaMatch) charset = metaMatch[1].toLowerCase();
       }
       
-      return iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
+      const decodedHtml = iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
+      
+      // Check for meta refresh redirect
+      const $temp = cheerio.load(decodedHtml);
+      const metaRefresh = $temp('meta[http-equiv="refresh"]').attr('content');
+      if (metaRefresh) {
+        const urlMatch = metaRefresh.match(/url=(.*)/i);
+        if (urlMatch && urlMatch[1]) {
+          let nextUrl = urlMatch[1].trim().replace(/['"]/g, '');
+          if (!nextUrl.startsWith("http")) nextUrl = new URL(nextUrl, u).href;
+          console.log(`Meta refresh detected: ${u} -> ${nextUrl}`);
+          return fetchPage(nextUrl, depth + 1);
+        }
+      }
+      
+      return decodedHtml;
     };
 
     let html = await fetchPage(targetUrl);
@@ -294,7 +330,13 @@ app.post("/api/novel-info", async (req, res) => {
       }
     }
 
-    let title = $("h1").first().text().trim() || $(".bookname h1").text().trim() || $("title").text().split("_")[0].trim();
+    let title = $(".booknav2 h1").first().text().trim() || $("h1").first().text().trim() || $(".bookname h1").text().trim() || $("title").text().split("_")[0].trim();
+    
+    // Filter out garbage titles
+    if (title.toLowerCase().includes("choto.click") || title.toLowerCase().includes("69shu")) {
+      const altTitle = $("h1").eq(1).text().trim() || $(".book-info h1").text().trim();
+      if (altTitle) title = altTitle;
+    }
     let author = $(".author, .writer, [itemprop='author'], .info i:contains('作者'), #info p:contains('作者'), .booknav2 p:contains('作者')").first().text().replace(/作者[:：]/, "").trim();
     let description = $(".description, .intro, #intro, [itemprop='description'], .nav_desc, #content:not(:has(a))").first().text().trim();
     let cover = $(".cover img, .book-img img, [itemprop='image'], .bookimg img, #fmimg img, .booknav2 img").first().attr("src");
@@ -305,7 +347,8 @@ app.post("/api/novel-info", async (req, res) => {
 
     const chapters: { title: string; url: string }[] = [];
     const chapterSelectors = [
-      ".catalog ul li a", "ul.mu_uul li a", ".chapter-list a", "#list a", ".book-mulu a", 
+      ".catalog ul li a", "#catalog ul li a", ".booknav2 + .catalog a", "ul.mu_uul li a", 
+      ".chapter-list a", "#list a", ".book-mulu a", 
       ".catalog a", "ul.list-charts a", ".quanshu-list a", ".box_con #list dl dd a",
       ".centent a", "td.ccss a", ".mainbody a"
     ];
