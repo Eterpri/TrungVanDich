@@ -91,6 +91,7 @@ export default function App() {
   const [userApiKey, setUserApiKey] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('');
   
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const wakeLockRef = useRef<any>(null);
@@ -110,6 +111,9 @@ export default function App() {
 
     const savedKey = localStorage.getItem('gemini_api_key');
     if (savedKey) setUserApiKey(savedKey);
+
+    const savedVoice = localStorage.getItem('tts_voice_uri');
+    if (savedVoice) setSelectedVoiceURI(savedVoice);
 
     fetch('/api/health')
       .then(res => res.json())
@@ -452,7 +456,8 @@ export default function App() {
         setVoices(currentVoices);
       }
 
-      const viVoice = currentVoices.find(v => v.lang.includes('vi')) || 
+      const viVoice = currentVoices.find(v => v.voiceURI === selectedVoiceURI) ||
+                    currentVoices.find(v => v.lang.includes('vi')) || 
                     currentVoices.find(v => v.lang.startsWith('vi'));
       
       if (viVoice) {
@@ -496,10 +501,10 @@ export default function App() {
       
       utteranceRef.current = utterance;
 
-      // Small delay for Android to process cancel()
-      setTimeout(() => {
-        synth.speak(utterance);
-      }, 20);
+      // Android/Chrome fix: speak immediately in the same tick if possible
+      // but keep a tiny delay for cancel() to finish if needed.
+      // Some browsers work better with 0 delay.
+      synth.speak(utterance);
 
       // Setup Media Session
       if ('mediaSession' in navigator) {
@@ -862,6 +867,45 @@ export default function App() {
                             onChange={(e) => setTtsRate(parseFloat(e.target.value))}
                             className="w-full h-1 bg-black/10 rounded-lg appearance-none cursor-pointer accent-orange-600"
                           />
+                        </div>
+
+                        {/* Voice Selection */}
+                        <div className="pt-4 border-t border-black/5">
+                          <label className="text-[10px] uppercase font-bold text-black/40 mb-3 block">Giọng đọc</label>
+                          <select 
+                            value={selectedVoiceURI}
+                            onChange={(e) => {
+                              setSelectedVoiceURI(e.target.value);
+                              localStorage.setItem('tts_voice_uri', e.target.value);
+                            }}
+                            className="w-full bg-black/5 border-none rounded-xl text-xs py-2 px-3 focus:ring-2 focus:ring-orange-500 transition-all"
+                          >
+                            <option value="">Mặc định (Tự chọn)</option>
+                            {voices
+                              .filter(v => v.lang.includes('vi') || v.lang.startsWith('vi'))
+                              .map((voice, i) => (
+                                <option key={i} value={voice.voiceURI}>
+                                  {voice.name} ({voice.lang})
+                                </option>
+                              ))}
+                            {voices.length > 0 && voices.filter(v => v.lang.includes('vi')).length === 0 && (
+                              <option disabled>Không tìm thấy giọng Tiếng Việt</option>
+                            )}
+                          </select>
+                          <button 
+                            onClick={() => {
+                              if (!synth) return;
+                              synth.cancel();
+                              const test = new SpeechSynthesisUtterance("Xin chào, đây là giọng đọc thử nghiệm.");
+                              const v = voices.find(v => v.voiceURI === selectedVoiceURI) || voices.find(v => v.lang.includes('vi'));
+                              if (v) test.voice = v;
+                              test.lang = 'vi-VN';
+                              synth.speak(test);
+                            }}
+                            className="w-full mt-2 py-2 bg-orange-100 text-orange-700 rounded-xl text-[10px] font-bold hover:bg-orange-200 transition-all"
+                          >
+                            Thử giọng
+                          </button>
                         </div>
                       </div>
                     </div>
