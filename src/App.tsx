@@ -385,53 +385,28 @@ export default function App() {
     }
   };
 
-  const toggleSpeak = () => {
-    const hasNativeBridge = !!(window as any).AndroidTTS;
-    
-    if (!hasNativeBridge) {
-      alert("Tính năng đọc chỉ hỗ trợ trên ứng dụng Android.");
-      return;
-    }
-
-    if (isSpeaking) {
-      stopSpeaking();
-      return;
-    }
-
-    if (!translatedContent) {
-      alert("Nội dung chưa sẵn sàng để đọc.");
-      return;
-    }
-
-    try {
-      // Clean text for Android processing
-      const cleanText = translatedContent
-        .replace(/[#*`]/g, '')
-        .replace(/\[.*?\]\(.*?\)/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      if (!cleanText) return;
-
-      if ((window as any).AndroidTTS) {
-        (window as any).AndroidTTS.speak(cleanText);
-        setIsSpeaking(true);
-      }
-    } catch (error) {
-      console.error("TTS Error:", error);
-      setIsSpeaking(false);
-    }
-  };
-
-  const stopSpeaking = () => {
-    if ((window as any).AndroidTTS) {
+  // Tự động gửi nội dung sang Android khi dịch xong
+  useEffect(() => {
+    if (translatedContent && (window as any).AndroidTTS) {
       try {
-        (window as any).AndroidTTS.stop();
-      } catch (e) {}
+        const cleanText = translatedContent
+          .replace(/[#*`]/g, '')
+          .replace(/\[.*?\]\(.*?\)/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        
+        if (cleanText) {
+          (window as any).AndroidTTS.updateContent(
+            novelData?.title || "Chương mới",
+            novelData?.chapterTitle || "",
+            cleanText
+          );
+        }
+      } catch (e) {
+        console.error("Failed to sync content to Android:", e);
+      }
     }
-    setIsSpeaking(false);
-  };
-
+  }, [translatedContent, novelData]);
 
   const getNavigation = () => {
     if (!novelData) return { prev: null, next: null };
@@ -845,20 +820,6 @@ export default function App() {
                         )}
                       >
                         <Settings size={16} />
-                      </button>
-                      <button 
-                        onClick={toggleSpeak}
-                        disabled={!translatedContent}
-                        className={cn(
-                          "p-2.5 rounded-2xl transition-all flex items-center gap-2 text-sm font-bold",
-                          isSpeaking 
-                            ? "bg-red-500 text-white hover:bg-red-600" 
-                            : "bg-orange-100 text-orange-700 hover:bg-orange-200"
-                        )}
-                        title={isSpeaking ? "Dừng đọc" : "Đọc bằng giọng nói"}
-                      >
-                        {isSpeaking ? <Square size={16} /> : <Play size={16} />}
-                        {isSpeaking ? "Dừng" : "Nghe"}
                       </button>
                       <button 
                         onClick={() => translateContent()}
