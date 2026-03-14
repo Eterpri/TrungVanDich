@@ -506,6 +506,17 @@ export default function App() {
   };
 
   const speakChunk = (index: number, chunks: string[]) => {
+    // Check for Native Android Bridge first
+    if ((window as any).AndroidTTS) {
+      try {
+        (window as any).AndroidTTS.speak(chunks.slice(index).join(" "));
+        setIsSpeaking(true);
+        return;
+      } catch (e) {
+        console.error("Native Bridge Error:", e);
+      }
+    }
+
     if (!synth || index >= chunks.length) {
       // Finished all chunks
       if (ttsAutoNext) {
@@ -577,6 +588,11 @@ export default function App() {
   };
 
   const stopSpeaking = () => {
+    if ((window as any).AndroidTTS) {
+      try {
+        (window as any).AndroidTTS.stop();
+      } catch (e) {}
+    }
     if (synth) synth.cancel();
     if (heartbeatRef.current) {
       clearInterval(heartbeatRef.current);
@@ -908,6 +924,16 @@ export default function App() {
                               )} />
                             </div>
                           </label>
+                        </div>
+
+                        {/* Android Background Guide */}
+                        <div className="p-3 bg-orange-50 rounded-xl border border-orange-100">
+                          <p className="text-[10px] text-orange-800 font-bold uppercase mb-1 flex items-center gap-1">
+                            <Info size={10} /> Mẹo chạy nền Android
+                          </p>
+                          <p className="text-[10px] text-orange-700 leading-relaxed">
+                            Để không bị tắt khi khóa màn hình: Vào <b>Cài đặt &gt; Ứng dụng &gt; Trình duyệt &gt; Pin &gt; Chọn "Không hạn chế"</b>.
+                          </p>
                         </div>
 
                         {/* TTS Speed */}
