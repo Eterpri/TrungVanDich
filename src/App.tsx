@@ -144,6 +144,13 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: targetUrl }),
       });
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await response.text();
+        throw new Error(`Lỗi phản hồi từ máy chủ. Nội dung: ${text.slice(0, 50)}...`);
+      }
+
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Lỗi lấy thông tin truyện');
       
@@ -195,6 +202,11 @@ export default function App() {
         
         if (!response.ok) throw new Error("Lỗi kết nối máy chủ");
         
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          throw new Error("Máy chủ phản hồi không đúng định dạng JSON");
+        }
+
         const data = await response.json();
         
         data.results.forEach((res: any, idx: number) => {
@@ -298,6 +310,12 @@ export default function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url: nextChapter.url }),
           });
+
+          const contentType = response.headers.get("content-type");
+          if (!contentType || !contentType.includes("application/json")) {
+            return; // Silent fail for pre-translation
+          }
+
           const data = await response.json();
           if (data.content) {
             const translated = await translateContent(data.content, true);
@@ -331,6 +349,12 @@ export default function App() {
           apiKey: userApiKey || undefined
         }),
       });
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await response.text();
+        throw new Error(`Lỗi phản hồi từ máy chủ dịch. Nội dung: ${text.slice(0, 50)}...`);
+      }
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Lỗi dịch thuật');
