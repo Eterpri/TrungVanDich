@@ -403,7 +403,7 @@ export default function App() {
     }
   };
 
-  const toggleSpeak = async () => {
+  const toggleSpeak = () => {
     if (!synth) {
       alert("Trình duyệt của bạn không hỗ trợ phát giọng nói.");
       return;
@@ -416,8 +416,9 @@ export default function App() {
       }
       if (wakeLockRef.current) {
         try {
-          await wakeLockRef.current.release();
-          wakeLockRef.current = null;
+          wakeLockRef.current.release().then(() => {
+            wakeLockRef.current = null;
+          }).catch(() => {});
         } catch (e) {}
       }
       setIsSpeaking(false);
@@ -430,15 +431,6 @@ export default function App() {
     }
 
     try {
-      // Force resume and cancel any pending tasks
-      synth.resume();
-      synth.cancel();
-
-      // Play silent audio immediately to keep process alive
-      if (silentAudioRef.current) {
-        silentAudioRef.current.play().catch(() => {});
-      }
-
       // Clean text
       const cleanText = translatedContent
         .replace(/[#*`]/g, '')
@@ -471,6 +463,17 @@ export default function App() {
 
       utterance.onstart = () => {
         setIsSpeaking(true);
+        // Play silent audio immediately to keep process alive
+        if (silentAudioRef.current) {
+          silentAudioRef.current.play().catch(() => {});
+        }
+        
+        // Wake Lock
+        if ('wakeLock' in navigator) {
+          (navigator as any).wakeLock.request('screen').then((lock: any) => {
+            wakeLockRef.current = lock;
+          }).catch(() => {});
+        }
       };
 
       utterance.onend = () => {
@@ -480,7 +483,7 @@ export default function App() {
           if (wakeLockRef.current) {
             wakeLockRef.current.release().then(() => {
               wakeLockRef.current = null;
-            });
+            }).catch(() => {});
           }
         } else {
           const nav = getNavigation();
@@ -501,10 +504,14 @@ export default function App() {
       
       utteranceRef.current = utterance;
 
-      // Android/Chrome fix: speak immediately in the same tick if possible
-      // but keep a tiny delay for cancel() to finish if needed.
-      // Some browsers work better with 0 delay.
+      // Android/Chrome fix: cancel and speak immediately
+      synth.cancel();
       synth.speak(utterance);
+      
+      // Some Android browsers start in a paused state
+      if (synth.paused) {
+        synth.resume();
+      }
 
       // Setup Media Session
       if ('mediaSession' in navigator) {
@@ -523,13 +530,6 @@ export default function App() {
           synth.resume();
           setIsSpeaking(true);
         });
-      }
-
-      // Wake Lock
-      if ('wakeLock' in navigator) {
-        try {
-          wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-        } catch (err) {}
       }
 
     } catch (error) {
