@@ -1,0 +1,67 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Literata:ital,opsz,wght@0,7..72,200..900;1,7..72,200..900&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Libre Baskerville", serif;
+  --font-reading: "Literata", serif;
+}
+
+@layer base {
+  body {
+    @apply antialiased transition-colors duration-300;
+  }
+}
+
+/* Reader Themes */
+.theme-light {
+  --reader-bg: #ffffff;
+  --reader-text: #1a1a1a;
+  --reader-border: rgba(0,0,0,0.05);
+}
+
+.theme-dark {
+  --reader-bg: #121212;
+  --reader-text: #e0e0e0;
+  --reader-border: rgba(255,255,255,0.1);
+}
+
+.theme-sepia {
+  --reader-bg: #f4ecd8;
+  --reader-text: #5b4636;
+  --reader-border: rgba(91,70,54,0.1);
+}
+
+.theme-slate {
+  --reader-bg: #1e293b;
+  --reader-text: #f1f5f9;
+  --reader-border: rgba(255,255,255,0.1);
+}
+
+/* Custom Scrollbar */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  border-radius: 10px;
+}
+
+/* Markdown Body Styles */
+.markdown-body {
+  @apply text-base leading-relaxed;
+  color: var(--reader-text);
+}
+
+.markdown-body p {
+  @apply mb-6;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  @apply font-bold mt-8 mb-4;
+  color: var(--reader-text);
+}
