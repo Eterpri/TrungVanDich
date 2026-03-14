@@ -91,6 +91,8 @@ export default function App() {
   const [userApiKey, setUserApiKey] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const wakeLockRef = useRef<any>(null);
   const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
@@ -384,16 +386,59 @@ export default function App() {
     }
   };
 
-  const toggleSpeak = () => {
+  const toggleSpeak = async () => {
     if (!synth) return;
 
     if (isSpeaking) {
       synth.cancel();
+      if (silentAudioRef.current) {
+        silentAudioRef.current.pause();
+      }
+      if (wakeLockRef.current) {
+        wakeLockRef.current.release().then(() => {
+          wakeLockRef.current = null;
+        });
+      }
       setIsSpeaking(false);
       return;
     }
 
     if (!translatedContent) return;
+
+    // Request Wake Lock to keep CPU active
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+      } catch (err) {
+        console.error('Wake Lock error:', err);
+      }
+    }
+
+    // Setup Media Session for background control
+    if ('mediaSession' in navigator) {
+      (navigator as any).mediaSession.metadata = new window.MediaMetadata({
+        title: novelData?.title || 'Đang đọc truyện',
+        artist: 'TrungVăn Dịch',
+        album: 'Audiobook',
+        artwork: [
+          { src: 'https://picsum.photos/seed/book/512/512', sizes: '512x512', type: 'image/png' }
+        ]
+      });
+
+      (navigator as any).mediaSession.setActionHandler('pause', () => {
+        synth.pause();
+        setIsSpeaking(false);
+      });
+      (navigator as any).mediaSession.setActionHandler('stop', () => {
+        synth.cancel();
+        setIsSpeaking(false);
+      });
+    }
+
+    // Play silent audio to keep browser process alive on mobile
+    if (silentAudioRef.current) {
+      silentAudioRef.current.play().catch(e => console.log("Silent audio play blocked", e));
+    }
 
     // Clean markdown for better speech
     const cleanText = translatedContent
@@ -404,15 +449,28 @@ export default function App() {
     utterance.lang = 'vi-VN';
     utterance.rate = ttsRate;
     utterance.onend = () => {
-      setIsSpeaking(false);
-      if (ttsAutoNext) {
+      if (!ttsAutoNext) {
+        setIsSpeaking(false);
+        if (silentAudioRef.current) silentAudioRef.current.pause();
+        if (wakeLockRef.current) {
+          wakeLockRef.current.release().then(() => {
+            wakeLockRef.current = null;
+          });
+        }
+      } else {
         const nav = getNavigation();
         if (nav.next) {
           fetchNovel(nav.next.url);
+        } else {
+          setIsSpeaking(false);
+          if (silentAudioRef.current) silentAudioRef.current.pause();
         }
       }
     };
-    utterance.onerror = () => setIsSpeaking(false);
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      if (silentAudioRef.current) silentAudioRef.current.pause();
+    };
     
     utteranceRef.current = utterance;
     setIsSpeaking(true);
@@ -502,6 +560,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#FDFCFB] text-[#1A1A1A] font-sans selection:bg-orange-100">
+      {/* Hidden silent audio for background TTS keep-alive */}
+      <audio 
+        ref={silentAudioRef} 
+        loop 
+        src="data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==" 
+      />
+      
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-black/5 px-6 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
