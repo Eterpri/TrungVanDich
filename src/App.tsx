@@ -90,6 +90,7 @@ export default function App() {
   const [showReaderSettings, setShowReaderSettings] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const heartbeatRef = useRef<any>(null);
   const [userApiKey, setUserApiKey] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -433,6 +434,11 @@ export default function App() {
     }
 
     try {
+      // Play silent audio immediately to establish audio context while user is interacting
+      if (silentAudioRef.current) {
+        silentAudioRef.current.play().catch(() => {});
+      }
+
       // Clean text
       const cleanText = translatedContent
         .replace(/[#*`]/g, '')
@@ -483,6 +489,14 @@ export default function App() {
           synth.resume();
           setIsSpeaking(true);
         });
+        (navigator as any).mediaSession.setActionHandler('nexttrack', () => {
+          const nav = getNavigation();
+          if (nav.next) fetchNovel(nav.next.url);
+        });
+        (navigator as any).mediaSession.setActionHandler('previoustrack', () => {
+          const nav = getNavigation();
+          if (nav.prev) fetchNovel(nav.prev.url);
+        });
       }
 
     } catch (error) {
@@ -528,8 +542,14 @@ export default function App() {
     utterance.volume = 1.0;
 
     utterance.onstart = () => {
-      // Keep process alive
-      if (silentAudioRef.current) silentAudioRef.current.play().catch(() => {});
+      // Heartbeat to prevent tab sleep
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      heartbeatRef.current = setInterval(() => {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+      }, 5000);
+
       if ('wakeLock' in navigator && !wakeLockRef.current) {
         (navigator as any).wakeLock.request('screen').then((lock: any) => {
           wakeLockRef.current = lock;
@@ -558,6 +578,10 @@ export default function App() {
 
   const stopSpeaking = () => {
     if (synth) synth.cancel();
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
     setIsSpeaking(false);
     setCurrentChunkIndex(0);
     setTtsChunks([]);
