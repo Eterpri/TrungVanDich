@@ -28,7 +28,8 @@ import {
   Zap,
   Key,
   Upload,
-  Save
+  Save,
+  Info,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
@@ -407,13 +408,21 @@ export default function App() {
   };
 
   const toggleSpeak = () => {
-    if (!synth) {
+    const hasNativeBridge = !!(window as any).AndroidTTS;
+    
+    if (!synth && !hasNativeBridge) {
       alert("Trình duyệt của bạn không hỗ trợ phát giọng nói.");
       return;
     }
 
     if (isSpeaking) {
-      synth.cancel();
+      if (hasNativeBridge) {
+        try {
+          (window as any).AndroidTTS.stop();
+        } catch (e) {}
+      }
+      
+      if (synth) synth.cancel();
       if (silentAudioRef.current) silentAudioRef.current.pause();
       if (wakeLockRef.current) {
         try {
