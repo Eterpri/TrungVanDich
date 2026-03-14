@@ -78,8 +78,34 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
     "69shuba.com"
   ];
 
+  const gasProxyUrl = process.env.GOOGLE_APPS_SCRIPT_PROXY_URL;
+
   for (let i = 0; i <= maxRetries; i++) {
     try {
+      // If we have a GAS proxy and we've failed at least once, or if it's a known blocked site, try proxy
+      if (gasProxyUrl && (i > 0 || is69Shu)) {
+        console.log(`Using Google Apps Script Proxy for ${currentUrl} (Attempt ${i + 1})`);
+        try {
+          const proxyResponse = await axios.get(gasProxyUrl, {
+            params: { url: currentUrl },
+            timeout: 20000
+          });
+          
+          if (proxyResponse.data && proxyResponse.data.content) {
+            // GAS returns base64 content to avoid encoding issues
+            const buffer = Buffer.from(proxyResponse.data.content, 'base64');
+            return {
+              data: buffer,
+              status: 200,
+              headers: { "content-type": "text/html" }
+            };
+          }
+        } catch (proxyError: any) {
+          console.error(`GAS Proxy failed: ${proxyError.message}`);
+          // Fallback to direct fetch if proxy fails
+        }
+      }
+
       const response = await axios.get(currentUrl, {
         responseType: "arraybuffer",
         headers: getScrapingHeaders(currentUrl, i),
