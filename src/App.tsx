@@ -395,9 +395,10 @@ export default function App() {
         silentAudioRef.current.pause();
       }
       if (wakeLockRef.current) {
-        wakeLockRef.current.release().then(() => {
+        try {
+          await wakeLockRef.current.release();
           wakeLockRef.current = null;
-        });
+        } catch (e) {}
       }
       setIsSpeaking(false);
       return;
@@ -405,37 +406,7 @@ export default function App() {
 
     if (!translatedContent) return;
 
-    // Request Wake Lock to keep CPU active
-    if ('wakeLock' in navigator) {
-      try {
-        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-      } catch (err) {
-        console.error('Wake Lock error:', err);
-      }
-    }
-
-    // Setup Media Session for background control
-    if ('mediaSession' in navigator) {
-      (navigator as any).mediaSession.metadata = new window.MediaMetadata({
-        title: novelData?.title || 'Đang đọc truyện',
-        artist: 'TrungVăn Dịch',
-        album: 'Audiobook',
-        artwork: [
-          { src: 'https://picsum.photos/seed/book/512/512', sizes: '512x512', type: 'image/png' }
-        ]
-      });
-
-      (navigator as any).mediaSession.setActionHandler('pause', () => {
-        synth.pause();
-        setIsSpeaking(false);
-      });
-      (navigator as any).mediaSession.setActionHandler('stop', () => {
-        synth.cancel();
-        setIsSpeaking(false);
-      });
-    }
-
-    // Play silent audio to keep browser process alive on mobile
+    // Play silent audio immediately to catch user gesture
     if (silentAudioRef.current) {
       silentAudioRef.current.play().catch(e => console.log("Silent audio play blocked", e));
     }
@@ -448,6 +419,37 @@ export default function App() {
     const utterance = new SpeechSynthesisUtterance(cleanText);
     utterance.lang = 'vi-VN';
     utterance.rate = ttsRate;
+    
+    // Start speaking IMMEDIATELY to preserve user gesture
+    utteranceRef.current = utterance;
+    setIsSpeaking(true);
+    synth.speak(utterance);
+
+    // Request Wake Lock and Media Session AFTER starting speech
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+      } catch (err) {}
+    }
+
+    if ('mediaSession' in navigator) {
+      (navigator as any).mediaSession.metadata = new window.MediaMetadata({
+        title: novelData?.title || 'Đang đọc truyện',
+        artist: 'TrungVăn Dịch',
+        album: 'Audiobook',
+        artwork: [{ src: 'https://picsum.photos/seed/book/512/512', sizes: '512x512', type: 'image/png' }]
+      });
+
+      (navigator as any).mediaSession.setActionHandler('pause', () => {
+        synth.pause();
+        setIsSpeaking(false);
+      });
+      (navigator as any).mediaSession.setActionHandler('stop', () => {
+        synth.cancel();
+        setIsSpeaking(false);
+      });
+    }
+
     utterance.onend = () => {
       if (!ttsAutoNext) {
         setIsSpeaking(false);
@@ -471,10 +473,6 @@ export default function App() {
       setIsSpeaking(false);
       if (silentAudioRef.current) silentAudioRef.current.pause();
     };
-    
-    utteranceRef.current = utterance;
-    setIsSpeaking(true);
-    synth.speak(utterance);
   };
 
   const getNavigation = () => {
@@ -709,6 +707,12 @@ export default function App() {
                   {/* Settings Overlay */}
                   {showReaderSettings && (
                     <div className="absolute top-20 right-8 z-20 w-72 bg-white dark:bg-slate-800 rounded-3xl shadow-2xl border border-black/5 p-6 animate-in slide-in-from-top-4 duration-200">
+                      <div className="flex items-center justify-between mb-4 pb-2 border-b border-black/5">
+                        <h3 className="text-xs font-bold uppercase tracking-widest text-black/40">Cài đặt đọc</h3>
+                        <button onClick={() => setShowReaderSettings(false)} className="p-1 hover:bg-black/5 rounded-full transition-all">
+                          <Trash2 size={16} className="text-black/20 hover:text-red-500" />
+                        </button>
+                      </div>
                       <div className="space-y-6">
                         {/* Font Size */}
                         <div>
