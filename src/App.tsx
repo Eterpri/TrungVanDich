@@ -26,7 +26,9 @@ import {
   Minus,
   Plus,
   Zap,
-  Key
+  Key,
+  Upload,
+  Save
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
@@ -82,6 +84,7 @@ export default function App() {
   const [readerFont, setReaderFont] = useState<'serif' | 'sans' | 'mono' | 'reading'>('reading');
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [ttsRate, setTtsRate] = useState(1.0);
+  const [ttsAutoNext, setTtsAutoNext] = useState(false);
   const [showReaderSettings, setShowReaderSettings] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -400,7 +403,15 @@ export default function App() {
     const utterance = new SpeechSynthesisUtterance(cleanText);
     utterance.lang = 'vi-VN';
     utterance.rate = ttsRate;
-    utterance.onend = () => setIsSpeaking(false);
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      if (ttsAutoNext) {
+        const nav = getNavigation();
+        if (nav.next) {
+          fetchNovel(nav.next.url);
+        }
+      }
+    };
     utterance.onerror = () => setIsSpeaking(false);
     
     utteranceRef.current = utterance;
@@ -428,6 +439,65 @@ export default function App() {
     navigator.clipboard.writeText(translatedContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const exportData = () => {
+    const data = {
+      novel_history: history,
+      novel_library: library,
+      novel_cache: preTranslated,
+      gemini_api_key: userApiKey,
+      settings: {
+        readerTheme,
+        readerFont,
+        readerFontSize,
+        ttsRate,
+        ttsAutoNext
+      }
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    saveAs(blob, `trungvan_dich_backup_${new Date().toISOString().split('T')[0]}.json`);
+  };
+
+  const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        
+        if (data.novel_history) {
+          setHistory(data.novel_history);
+          localStorage.setItem('novel_history', JSON.stringify(data.novel_history));
+        }
+        if (data.novel_library) {
+          setLibrary(data.novel_library);
+          localStorage.setItem('novel_library', JSON.stringify(data.novel_library));
+        }
+        if (data.novel_cache) {
+          setPreTranslated(data.novel_cache);
+          localStorage.setItem('novel_cache', JSON.stringify(data.novel_cache));
+        }
+        if (data.gemini_api_key) {
+          setUserApiKey(data.gemini_api_key);
+          localStorage.setItem('gemini_api_key', data.gemini_api_key);
+        }
+        if (data.settings) {
+          if (data.settings.readerTheme) setReaderTheme(data.settings.readerTheme);
+          if (data.settings.readerFont) setReaderFont(data.settings.readerFont);
+          if (data.settings.readerFontSize) setReaderFontSize(data.settings.readerFontSize);
+          if (data.settings.ttsRate) setTtsRate(data.settings.ttsRate);
+          if (data.settings.ttsAutoNext !== undefined) setTtsAutoNext(data.settings.ttsAutoNext);
+        }
+        
+        alert("Nhập dữ liệu thành công!");
+      } catch (err) {
+        alert("Lỗi khi nhập dữ liệu: Định dạng file không hợp lệ.");
+      }
+    };
+    reader.readAsText(file);
   };
 
   return (
@@ -634,6 +704,25 @@ export default function App() {
                           </div>
                         </div>
 
+                        {/* TTS Auto Next */}
+                        <div className="pt-4 border-t border-black/5">
+                          <label className="flex items-center justify-between cursor-pointer group">
+                            <span className="text-xs font-bold text-black/60 group-hover:text-black transition-colors">Tự động chuyển chương (TTS)</span>
+                            <div 
+                              onClick={() => setTtsAutoNext(!ttsAutoNext)}
+                              className={cn(
+                                "w-10 h-5 rounded-full transition-all relative",
+                                ttsAutoNext ? "bg-orange-600" : "bg-black/10"
+                              )}
+                            >
+                              <div className={cn(
+                                "absolute top-1 w-3 h-3 bg-white rounded-full transition-all",
+                                ttsAutoNext ? "left-6" : "left-1"
+                              )} />
+                            </div>
+                          </label>
+                        </div>
+
                         {/* TTS Speed */}
                         <div>
                           <label className="text-[10px] uppercase font-bold text-black/40 mb-3 block">Tốc độ đọc: {ttsRate}x</label>
@@ -833,57 +922,87 @@ export default function App() {
           </div>
         )}
 
-        {/* API Key Modal */}
+        {/* API Key & Backup Modal */}
         {showApiKeyModal && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-            <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-bold flex items-center gap-2">
-                  <Key className="text-orange-600" /> Cấu hình API Key
+                  <Settings className="text-orange-600" /> Cài đặt & Sao lưu
                 </h2>
                 <button onClick={() => setShowApiKeyModal(false)} className="text-black/20 hover:text-black">
                   <Trash2 size={20} />
                 </button>
               </div>
               
-              <div className="space-y-4">
-                <p className="text-sm text-black/60">
-                  Nhập Gemini API Key của bạn để sử dụng dịch thuật. Key sẽ được lưu an toàn trong trình duyệt của bạn.
-                </p>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-widest text-black/40">Gemini API Key</label>
-                  <input 
-                    type="password"
-                    value={userApiKey}
-                    onChange={(e) => setUserApiKey(e.target.value)}
-                    placeholder="Dán API Key tại đây..."
-                    className="w-full px-4 py-3 rounded-2xl bg-black/5 border-none focus:ring-2 focus:ring-orange-500 transition-all"
-                  />
-                </div>
-                <div className="flex gap-3 pt-4">
-                  <button 
-                    onClick={() => {
-                      localStorage.setItem('gemini_api_key', userApiKey);
-                      setShowApiKeyModal(false);
-                    }}
-                    className="flex-1 bg-orange-600 text-white py-3 rounded-2xl font-bold hover:bg-orange-700 transition-all shadow-lg shadow-orange-500/20"
-                  >
-                    Lưu cấu hình
-                  </button>
-                  <button 
-                    onClick={() => {
-                      setUserApiKey('');
-                      localStorage.removeItem('gemini_api_key');
-                      setShowApiKeyModal(false);
-                    }}
-                    className="px-6 py-3 rounded-2xl bg-black/5 font-bold hover:bg-black/10 transition-all"
-                  >
-                    Xóa
-                  </button>
-                </div>
-                <p className="text-[10px] text-center text-black/30">
-                  Nếu bỏ trống, ứng dụng sẽ thử dùng Key hệ thống (nếu có).
-                </p>
+              <div className="space-y-8">
+                {/* API Key Section */}
+                <section className="space-y-4">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-black/40">Dịch thuật (Gemini)</h3>
+                  <p className="text-xs text-black/60">
+                    Nhập Gemini API Key của bạn để sử dụng dịch thuật. Key sẽ được lưu an toàn trong trình duyệt.
+                  </p>
+                  <div className="space-y-2">
+                    <input 
+                      type="password"
+                      value={userApiKey}
+                      onChange={(e) => setUserApiKey(e.target.value)}
+                      placeholder="Dán API Key tại đây..."
+                      className="w-full px-4 py-3 rounded-2xl bg-black/5 border-none focus:ring-2 focus:ring-orange-500 transition-all text-sm"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button 
+                      onClick={() => {
+                        localStorage.setItem('gemini_api_key', userApiKey);
+                        setShowApiKeyModal(false);
+                      }}
+                      className="flex-1 bg-black text-white py-3 rounded-2xl text-xs font-bold hover:bg-black/80 transition-all"
+                    >
+                      Lưu Key
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setUserApiKey('');
+                        localStorage.removeItem('gemini_api_key');
+                        setShowApiKeyModal(false);
+                      }}
+                      className="px-6 py-3 rounded-2xl bg-black/5 text-xs font-bold hover:bg-black/10 transition-all"
+                    >
+                      Xóa
+                    </button>
+                  </div>
+                </section>
+
+                {/* Backup Section */}
+                <section className="space-y-4 pt-6 border-t border-black/5">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-black/40">Sao lưu & Đồng bộ</h3>
+                  <p className="text-xs text-black/60">
+                    Xuất dữ liệu của bạn để sử dụng trên thiết bị khác hoặc nhập từ file backup đã có.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button 
+                      onClick={exportData}
+                      className="flex items-center justify-center gap-2 bg-orange-50 text-orange-700 py-3 rounded-2xl text-xs font-bold hover:bg-orange-100 transition-all border border-orange-200"
+                    >
+                      <Download size={14} /> Xuất dữ liệu
+                    </button>
+                    <label className="flex items-center justify-center gap-2 bg-black/5 text-black py-3 rounded-2xl text-xs font-bold hover:bg-black/10 transition-all cursor-pointer border border-black/5">
+                      <Upload size={14} /> Nhập dữ liệu
+                      <input type="file" accept=".json" onChange={importData} className="hidden" />
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-black/30 italic">
+                    * Bao gồm: API Key, Tủ sách, Lịch sử và các chương đã dịch.
+                  </p>
+                </section>
+
+                <button 
+                  onClick={() => setShowApiKeyModal(false)}
+                  className="w-full bg-orange-600 text-white py-4 rounded-2xl font-bold hover:bg-orange-700 transition-all shadow-lg shadow-orange-500/20"
+                >
+                  Hoàn tất
+                </button>
               </div>
             </div>
           </div>
