@@ -402,6 +402,16 @@ app.post("/api/novel-info", async (req, res) => {
       }
     }
 
+    // Special check for "Full Catalog" (完整目录) link - common on 69shuba and others
+    const fullCatalogLink = $("a:contains('完整目录'), a:contains('查看完整目录'), a:contains('全部章节'), a:contains('点击查看完整目录')").first().attr("href");
+    if (fullCatalogLink) {
+      const nextUrl = new URL(fullCatalogLink, targetUrl).href;
+      console.log(`Found Full Catalog link: ${nextUrl}`);
+      targetUrl = nextUrl;
+      html = await fetchPage(targetUrl);
+      $ = cheerio.load(html);
+    }
+
     let title = $(".booknav2 h1").first().text().trim() || $(".book-info h1").text().trim() || $("h1").first().text().trim() || $(".bookname h1").text().trim() || $("title").text().split("_")[0].trim();
     
     // Filter out garbage titles
@@ -472,7 +482,14 @@ app.post("/api/novel-info", async (req, res) => {
       });
     }
 
-    res.json({ title, author, description, cover, chapters: bestChapters.slice(0, 3000) });
+    res.json({ 
+      title, 
+      author, 
+      description, 
+      cover, 
+      chapters: bestChapters.slice(0, 3000),
+      sourceUrl: targetUrl 
+    });
   } catch (error: any) {
     res.status(500).json({ error: `Lỗi lấy thông tin truyện: ${error.message}` });
   }

@@ -902,8 +902,18 @@ export default function App() {
                 <div className="flex gap-4">
                   <div className="bg-black/5 px-4 py-2 rounded-xl">
                     <p className="text-[10px] uppercase font-bold text-black/30">Tổng chương</p>
-                    <p className="font-bold">{selectedNovel.chapters.length}</p>
+                    <p className="font-bold">{(selectedNovel as any).chapters.length}</p>
                   </div>
+                  {(selectedNovel as any).sourceUrl && (
+                    <div className="bg-black/5 px-4 py-2 rounded-xl flex-1">
+                      <p className="text-[10px] uppercase font-bold text-black/30">Nguồn dữ liệu</p>
+                      <p className="text-[10px] font-bold truncate text-orange-600">
+                        <a href={(selectedNovel as any).sourceUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                          {(selectedNovel as any).sourceUrl}
+                        </a>
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
