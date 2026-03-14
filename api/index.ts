@@ -333,11 +333,13 @@ app.post("/api/novel-info", async (req, res) => {
   if (!targetUrl.startsWith("http")) targetUrl = "https://" + targetUrl;
 
   // Specific normalization for 69shuba to jump to book info page
-  if (targetUrl.includes("69shu")) {
+  if (targetUrl.includes("69shu") || targetUrl.includes("69xinshuba")) {
+    // Handle /txt/ID/CHAPTER_ID or /txt/ID.htm
     const match = targetUrl.match(/\/txt\/(\d+)/);
     if (match && match[1]) {
       const bookId = match[1];
       const urlObj = new URL(targetUrl);
+      // Try both .htm and / formats
       targetUrl = `${urlObj.protocol}//${urlObj.host}/book/${bookId}.htm`;
       console.log(`Normalized 69shuba URL to book info: ${targetUrl}`);
     }
@@ -386,27 +388,31 @@ app.post("/api/novel-info", async (req, res) => {
     let html = await fetchPage(targetUrl);
     let $ = cheerio.load(html);
 
+    // If we are still on a chapter page (detected by content or URL), try to find the TOC link
     const isChapterPage = targetUrl.includes("/txt/") || targetUrl.includes(".html") || $(".read-content").length > 0 || $("#content").length > 0 || $(".txtnav").length > 0;
-    if (isChapterPage) {
-      // Try to find book page link on 69shuba and others
-      const tocLink = $("a:contains('目录'), a:contains('返回书页'), a:contains('返回目录'), a:contains('全文阅读'), a:contains('书页')").first().attr("href");
+    if (isChapterPage && !targetUrl.includes("/book/")) {
+      console.log(`Still on chapter page, searching for TOC link...`);
+      const tocLink = $("a:contains('目录'), a:contains('返回书页'), a:contains('返回目录'), a:contains('全文阅读'), a:contains('书页'), a:contains('首页')").first().attr("href");
       if (tocLink) {
-        targetUrl = new URL(tocLink, targetUrl).href;
+        const nextUrl = new URL(tocLink, targetUrl).href;
+        console.log(`Found TOC link: ${nextUrl}`);
+        targetUrl = nextUrl;
         html = await fetchPage(targetUrl);
         $ = cheerio.load(html);
       }
     }
 
-    let title = $(".booknav2 h1").first().text().trim() || $("h1").first().text().trim() || $(".bookname h1").text().trim() || $("title").text().split("_")[0].trim();
+    let title = $(".booknav2 h1").first().text().trim() || $(".book-info h1").text().trim() || $("h1").first().text().trim() || $(".bookname h1").text().trim() || $("title").text().split("_")[0].trim();
     
     // Filter out garbage titles
     if (title.toLowerCase().includes("choto.click") || title.toLowerCase().includes("69shu")) {
       const altTitle = $("h1").eq(1).text().trim() || $(".book-info h1").text().trim();
       if (altTitle) title = altTitle;
     }
-    let author = $(".author, .writer, [itemprop='author'], .info i:contains('作者'), #info p:contains('作者'), .booknav2 p:contains('作者')").first().text().replace(/作者[:：]/, "").trim();
-    let description = $(".description, .intro, #intro, [itemprop='description'], .nav_desc, #content:not(:has(a))").first().text().trim();
-    let cover = $(".cover img, .book-img img, [itemprop='image'], .bookimg img, #fmimg img, .booknav2 img").first().attr("src");
+
+    let author = $(".author, .writer, [itemprop='author'], .info i:contains('作者'), #info p:contains('作者'), .booknav2 p:contains('作者'), .book-info p:contains('作者')").first().text().replace(/作者[:：]/, "").trim();
+    let description = $(".description, .intro, #intro, [itemprop='description'], .nav_desc, .book-intro, #content:not(:has(a))").first().text().trim();
+    let cover = $(".cover img, .book-img img, [itemprop='image'], .bookimg img, #fmimg img, .booknav2 img, .book-info img").first().attr("src");
     
     if (cover && !cover.startsWith("http")) {
       cover = new URL(cover, targetUrl).href;
@@ -415,9 +421,9 @@ app.post("/api/novel-info", async (req, res) => {
     const chapters: { title: string; url: string }[] = [];
     const chapterSelectors = [
       ".catalog ul li a", "#catalog ul li a", ".booknav2 + .catalog a", "ul.mu_uul li a", 
-      ".chapter-list a", "#list a", ".book-mulu a", 
+      ".chapter-list a", "#list a", ".book-mulu a", ".mulu_list a",
       ".catalog a", "ul.list-charts a", ".quanshu-list a", ".box_con #list dl dd a",
-      ".centent a", "td.ccss a", ".mainbody a"
+      ".centent a", "td.ccss a", ".mainbody a", "#yuedu a"
     ];
 
     for (const selector of chapterSelectors) {
@@ -425,15 +431,38 @@ app.post("/api/novel-info", async (req, res) => {
         const $el = $(el);
         const cTitle = $el.text().trim();
         let cUrl = $el.attr("href");
-        if (cUrl && cTitle && cTitle.length > 1) {
+        
+        // Skip non-chapter links
+        if (!cUrl || !cTitle || cTitle.length < 2 || cUrl.includes("javascript:") || cUrl === "#") return;
+        if (cTitle.includes("首页") || cTitle.includes("目录") || cTitle.includes("书页")) return;
+
+        if (cUrl && cTitle) {
           if (!cUrl.startsWith("http")) cUrl = new URL(cUrl, targetUrl).href;
           chapters.push({ title: cTitle, url: cUrl });
         }
       });
-      if (chapters.length > 0) break;
+      if (chapters.length > 5) break; // Found a good list
     }
 
-    res.json({ title, author, description, cover, chapters: chapters.slice(0, 1000) });
+    // Fallback: search for any links that look like chapter links (contain digits and .html or /txt/)
+    if (chapters.length === 0) {
+      console.log("No chapters found with selectors, trying fallback regex...");
+      $("a").each((_, el) => {
+        const $el = $(el);
+        const cTitle = $el.text().trim();
+        const cUrl = $el.attr("href");
+        if (cUrl && cTitle && (cUrl.includes(".html") || cUrl.match(/\/txt\/\d+/)) && cTitle.length > 2) {
+          let fullUrl = cUrl;
+          if (!fullUrl.startsWith("http")) fullUrl = new URL(fullUrl, targetUrl).href;
+          // Avoid duplicates
+          if (!chapters.find(c => c.url === fullUrl)) {
+            chapters.push({ title: cTitle, url: fullUrl });
+          }
+        }
+      });
+    }
+
+    res.json({ title, author, description, cover, chapters: chapters.slice(0, 2000) });
   } catch (error: any) {
     res.status(500).json({ error: `Lỗi lấy thông tin truyện: ${error.message}` });
   }
