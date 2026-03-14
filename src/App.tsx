@@ -515,10 +515,11 @@ export default function App() {
   };
 
   const speakChunk = (index: number, chunks: string[]) => {
-    // Check for Native Android Bridge first
+    // 1. Ưu tiên giải pháp Android Native Bridge (Theo đề xuất của bạn)
     if ((window as any).AndroidTTS) {
       try {
-        (window as any).AndroidTTS.speak(chunks.slice(index).join(" "));
+        const fullText = chunks.slice(index).join(" ");
+        (window as any).AndroidTTS.speak(fullText);
         setIsSpeaking(true);
         return;
       } catch (e) {
@@ -526,6 +527,7 @@ export default function App() {
       }
     }
 
+    // 2. Dự phòng cho trình duyệt Web chuẩn
     if (!synth || index >= chunks.length) {
       // Finished all chunks
       if (ttsAutoNext) {
