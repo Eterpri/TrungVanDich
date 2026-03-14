@@ -63,7 +63,7 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
   let currentUrl = targetUrl;
 
   // Mirror fallback for 69shuba if blocked or down
-  const is69Shu = targetUrl.includes("69shu");
+  const is69Shu = targetUrl.includes("69shu") || targetUrl.includes("69xinshuba");
   // Expanded and prioritized mirrors list
   const mirrors = [
     "www.69shuba.cx", 
@@ -79,33 +79,49 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
   ];
 
   const gasProxyUrl = process.env.GOOGLE_APPS_SCRIPT_PROXY_URL;
+  if (gasProxyUrl) {
+    console.log("GAS Proxy URL is configured.");
+  } else {
+    console.warn("GAS Proxy URL is NOT configured in environment variables.");
+  }
 
   for (let i = 0; i <= maxRetries; i++) {
     try {
-      // If we have a GAS proxy and we've failed at least once, or if it's a known blocked site, try proxy
-      if (gasProxyUrl && (i > 0 || is69Shu)) {
-        console.log(`Using Google Apps Script Proxy for ${currentUrl} (Attempt ${i + 1})`);
+      // Use proxy if configured AND (it's a known problematic site OR we've already failed once)
+      const shouldByPass = is69Shu || currentUrl.includes("69xinshuba") || i > 0;
+      
+      if (gasProxyUrl && shouldByPass) {
+        console.log(`[Proxy] Attempting GAS Proxy for: ${currentUrl} (Attempt ${i + 1})`);
         try {
           const proxyResponse = await axios.get(gasProxyUrl, {
             params: { url: currentUrl },
-            timeout: 20000
+            timeout: 30000,
+            maxRedirects: 10, // GAS often redirects
+            validateStatus: (status) => status < 500
           });
           
           if (proxyResponse.data && proxyResponse.data.content) {
-            // GAS returns base64 content to avoid encoding issues
+            console.log(`[Proxy] Success fetching via GAS: ${currentUrl}`);
             const buffer = Buffer.from(proxyResponse.data.content, 'base64');
             return {
               data: buffer,
               status: 200,
-              headers: { "content-type": "text/html" }
+              headers: { 
+                "content-type": proxyResponse.data.contentType || "text/html",
+                "x-proxy-used": "google-apps-script"
+              }
             };
+          } else if (proxyResponse.data && proxyResponse.data.error) {
+            console.error(`[Proxy] GAS returned error: ${proxyResponse.data.error}`);
+          } else {
+            console.error(`[Proxy] GAS returned unexpected response format:`, JSON.stringify(proxyResponse.data).substring(0, 200));
           }
         } catch (proxyError: any) {
-          console.error(`GAS Proxy failed: ${proxyError.message}`);
-          // Fallback to direct fetch if proxy fails
+          console.error(`[Proxy] GAS request failed: ${proxyError.message}`);
         }
       }
 
+      console.log(`[Direct] Attempting direct fetch for: ${currentUrl} (Attempt ${i + 1})`);
       const response = await axios.get(currentUrl, {
         responseType: "arraybuffer",
         headers: getScrapingHeaders(currentUrl, i),
