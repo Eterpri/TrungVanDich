@@ -527,22 +527,34 @@ app.post("/api/scrape-chapters", async (req, res) => {
   const { urls } = req.body;
   if (!urls || !Array.isArray(urls)) return res.status(400).json({ error: "URLs array is required" });
 
-  const results = [];
-  for (const url of urls.slice(0, 100)) { 
+  const limitedUrls = urls.slice(0, 100);
+  
+  // Fetch in parallel with a small concurrency limit to avoid being blocked
+  const fetchChapter = async (url: string) => {
     try {
-      const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba"];
+      const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
       const isGBK = gbkSites.some(site => url.includes(site));
 
       const response = await fetchWithRetry(url);
-      const html = iconv.decode(Buffer.from(response.data), isGBK ? "gbk" : "utf-8");
+      const buffer = Buffer.from(response.data);
+      
+      // Better charset detection
+      let charset = isGBK ? "gbk" : "utf-8";
+      const contentType = response.headers["content-type"] || "";
+      const charsetMatch = contentType.toString().match(/charset=([^;]+)/i);
+      if (charsetMatch) {
+        charset = charsetMatch[1].toLowerCase();
+      }
+      
+      const html = iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
       const $ = cheerio.load(html);
       
       let content = "";
-      const selectors = [".txtnav", "#content", ".content", ".read-content", "#txt", ".book_content"];
+      const selectors = [".txtnav", "#content", ".content", ".read-content", "#txt", ".book_content", ".chapter-content"];
       for (const s of selectors) {
         const found = $(s);
         if (found.length > 0) {
-          found.find("script, ins, .ads, .ad, style, a, .info, .title").remove();
+          found.find("script, ins, .ads, .ad, style, a, .info, .title, .navigation").remove();
           content = found.text().trim()
             .replace(/\s+/g, " ")
             .replace(/&nbsp;/g, " ")
@@ -550,11 +562,21 @@ app.post("/api/scrape-chapters", async (req, res) => {
           if (content.length > 100) break;
         }
       }
-      results.push({ url, content, title: $("h1").first().text().trim() || "Chương không tên" });
+      return { url, content, title: $("h1").first().text().trim() || "Chương không tên" };
     } catch (e) {
-      results.push({ url, error: true });
+      return { url, error: true };
     }
+  };
+
+  // Process in small parallel chunks (e.g., 5 at a time)
+  const results = [];
+  const concurrency = 5;
+  for (let i = 0; i < limitedUrls.length; i += concurrency) {
+    const chunk = limitedUrls.slice(i, i + concurrency);
+    const chunkResults = await Promise.all(chunk.map(url => fetchChapter(url)));
+    results.push(...chunkResults);
   }
+
   res.json({ results });
 });
 

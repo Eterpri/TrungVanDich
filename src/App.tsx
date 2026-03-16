@@ -18,6 +18,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Play,
+  Pause,
   Square,
   Type,
   Sun,
@@ -56,6 +57,7 @@ interface Chapter {
 
 interface Novel {
   url: string;
+  sourceUrl?: string;
   title: string;
   author?: string;
   description?: string;
@@ -68,7 +70,7 @@ export default function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [translating, setTranslating] = useState(false);
-  const [novelData, setNovelData] = useState<{ title: string; content: string } | null>(null);
+  const [novelData, setNovelData] = useState<{ title: string; chapterTitle?: string; content: string } | null>(null);
   const [translatedContent, setTranslatedContent] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [library, setLibrary] = useState<Novel[]>([]);
@@ -76,7 +78,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'reader' | 'library' | 'scraper'>('reader');
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [scrapingProgress, setScrapingProgress] = useState<{ current: number; total: number } | null>(null);
+  const [scrapingProgress, setScrapingProgress] = useState<{ current: number; total: number; isPaused?: boolean; novelTitle?: string } | null>(null);
+  const isScrapingPaused = useRef(false);
   const [rangeStart, setRangeStart] = useState<number>(1);
   const [rangeEnd, setRangeEnd] = useState<number>(50);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -187,8 +190,59 @@ export default function App() {
     setLibrary(updatedLibrary);
     localStorage.setItem('novel_library', JSON.stringify(updatedLibrary));
   };
+  const openDB = () => {
+    return new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('NovelScraperDB', 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('downloads')) {
+          db.createObjectStore('downloads', { keyPath: 'url' });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  };
 
-  const bulkScrape = async (novel: Novel, startIdx: number, endIdx: number) => {
+  const saveDownloadedChapter = async (url: string, content: string, title: string, novelUrl: string) => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction('downloads', 'readwrite');
+      const store = transaction.objectStore('downloads');
+      store.put({ url, content, title, novelUrl, timestamp: Date.now() });
+      transaction.oncomplete = () => resolve(true);
+      transaction.onerror = () => reject(transaction.error);
+    });
+  };
+
+  const getDownloadedChapters = async (novelUrl: string) => {
+    const db = await openDB();
+    return new Promise<any[]>((resolve, reject) => {
+      const transaction = db.transaction('downloads', 'readonly');
+      const store = transaction.objectStore('downloads');
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const all = request.result;
+        resolve(all.filter(item => item.novelUrl === novelUrl));
+      };
+      request.onerror = () => reject(request.error);
+    });
+  };
+
+  const clearDownloadedChapters = async (novelUrl: string) => {
+    const db = await openDB();
+    const transaction = db.transaction('downloads', 'readwrite');
+    const store = transaction.objectStore('downloads');
+    const request = store.getAll();
+    request.onsuccess = () => {
+      const all = request.result;
+      all.forEach(item => {
+        if (item.novelUrl === novelUrl) store.delete(item.url);
+      });
+    };
+  };
+
+  const bulkScrape = async (novel: Novel, startIdx: number, endIdx: number, resume = false) => {
     if (startIdx < 0) startIdx = 0;
     if (endIdx >= novel.chapters.length) endIdx = novel.chapters.length - 1;
     if (startIdx > endIdx) {
@@ -196,47 +250,90 @@ export default function App() {
       return;
     }
 
+    isScrapingPaused.current = false;
     const chaptersToScrape = novel.chapters.slice(startIdx, endIdx + 1);
-    const zip = new JSZip();
-    setScrapingProgress({ current: 0, total: chaptersToScrape.length });
+    
+    // Check existing downloads in IDB
+    const existing = await getDownloadedChapters(novel.sourceUrl || novel.title);
+    const existingUrls = new Set(existing.map(e => e.url));
+    
+    const remainingChapters = chaptersToScrape.filter(c => !existingUrls.has(c.url));
+    
+    setScrapingProgress({ 
+      current: chaptersToScrape.length - remainingChapters.length, 
+      total: chaptersToScrape.length,
+      novelTitle: novel.title 
+    });
 
     try {
-      // Process in batches of 20
-      for (let i = 0; i < chaptersToScrape.length; i += 20) {
-        const batch = chaptersToScrape.slice(i, i + 20);
-        const response = await fetch('/api/scrape-chapters', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ urls: batch.map(c => c.url) }),
-        });
-        
-        if (!response.ok) throw new Error("Lỗi kết nối máy chủ");
-        
-        const contentType = response.headers.get("content-type");
-        if (!contentType || !contentType.includes("application/json")) {
-          throw new Error("Máy chủ phản hồi không đúng định dạng JSON");
+      // Process in parallel batches
+      const batchSize = 20;
+      const concurrency = 3; // 3 parallel batch requests
+      
+      for (let i = 0; i < remainingChapters.length; i += batchSize * concurrency) {
+        if (isScrapingPaused.current) {
+          setScrapingProgress(prev => prev ? { ...prev, isPaused: true } : null);
+          return;
         }
 
-        const data = await response.json();
-        
-        data.results.forEach((res: any, idx: number) => {
-          if (!res.error) {
-            // Use original chapter index for filename
-            const originalIdx = startIdx + i + idx + 1;
-            const fileName = `Chuong_${originalIdx.toString().padStart(4, '0')}_${res.title || 'Chapter'}.txt`;
-            zip.file(fileName, res.content);
+        const batches = [];
+        for (let j = 0; j < concurrency; j++) {
+          const start = i + (j * batchSize);
+          if (start < remainingChapters.length) {
+            batches.push(remainingChapters.slice(start, start + batchSize));
           }
-        });
+        }
+
+        const results = await Promise.all(batches.map(async (batch) => {
+          const response = await fetch('/api/scrape-chapters', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls: batch.map(c => c.url) }),
+          });
+          
+          if (!response.ok) throw new Error("Lỗi kết nối máy chủ");
+          return response.json();
+        }));
+
+        // Save results to IDB
+        for (const data of results) {
+          for (const res of data.results) {
+            if (!res.error) {
+              await saveDownloadedChapter(res.url, res.content, res.title, novel.sourceUrl || novel.title);
+            }
+          }
+        }
         
-        setScrapingProgress({ current: Math.min(i + 20, chaptersToScrape.length), total: chaptersToScrape.length });
+        const completedCount = chaptersToScrape.length - remainingChapters.length + Math.min(i + (batchSize * concurrency), remainingChapters.length);
+        setScrapingProgress({ 
+          current: completedCount, 
+          total: chaptersToScrape.length,
+          novelTitle: novel.title 
+        });
       }
+
+      // All done, generate ZIP
+      const allDownloaded = await getDownloadedChapters(novel.sourceUrl || novel.title);
+      const zip = new JSZip();
+      
+      // Sort by original index
+      chaptersToScrape.forEach((ch, idx) => {
+        const downloaded = allDownloaded.find(d => d.url === ch.url);
+        if (downloaded) {
+          const fileName = `Chuong_${(startIdx + idx + 1).toString().padStart(4, '0')}_${downloaded.title}.txt`;
+          zip.file(fileName, downloaded.content);
+        }
+      });
 
       const content = await zip.generateAsync({ type: "blob" });
       saveAs(content, `${novel.title}_Chuong_${startIdx + 1}-${endIdx + 1}.zip`);
+      
+      // Optionally clear IDB after successful download
+      await clearDownloadedChapters(novel.sourceUrl || novel.title);
+      setScrapingProgress(null);
     } catch (err: any) {
       setError("Lỗi cào dữ liệu: " + err.message);
-    } finally {
-      setScrapingProgress(null);
+      setScrapingProgress(prev => prev ? { ...prev, isPaused: true } : null);
     }
   };
 
@@ -440,7 +537,6 @@ export default function App() {
         readerTheme,
         readerFont,
         readerFontSize,
-        ttsRate,
         ttsAutoNext
       }
     };
@@ -477,7 +573,6 @@ export default function App() {
           if (data.settings.readerTheme) setReaderTheme(data.settings.readerTheme);
           if (data.settings.readerFont) setReaderFont(data.settings.readerFont);
           if (data.settings.readerFontSize) setReaderFontSize(data.settings.readerFontSize);
-          if (data.settings.ttsRate) setTtsRate(data.settings.ttsRate);
           if (data.settings.ttsAutoNext !== undefined) setTtsAutoNext(data.settings.ttsAutoNext);
         }
         
@@ -735,61 +830,9 @@ export default function App() {
                           </p>
                         </div>
 
-                        {/* TTS Speed */}
-                        <div>
-                          <label className="text-[10px] uppercase font-bold text-black/40 mb-3 block">Tốc độ đọc: {ttsRate}x</label>
-                          <input 
-                            type="range" 
-                            min="0.5" 
-                            max="2.0" 
-                            step="0.1" 
-                            value={ttsRate} 
-                            onChange={(e) => setTtsRate(parseFloat(e.target.value))}
-                            className="w-full h-1 bg-black/10 rounded-lg appearance-none cursor-pointer accent-orange-600"
-                          />
-                        </div>
-
-                        {/* Voice Selection */}
-                        <div className="pt-4 border-t border-black/5">
-                          <label className="text-[10px] uppercase font-bold text-black/40 mb-3 block">Giọng đọc</label>
-                          <select 
-                            value={selectedVoiceURI}
-                            onChange={(e) => {
-                              setSelectedVoiceURI(e.target.value);
-                              localStorage.setItem('tts_voice_uri', e.target.value);
-                            }}
-                            className="w-full bg-black/5 border-none rounded-xl text-xs py-2 px-3 focus:ring-2 focus:ring-orange-500 transition-all"
-                          >
-                            <option value="">Mặc định (Tự chọn)</option>
-                            {voices
-                              .filter(v => v.lang.includes('vi') || v.lang.startsWith('vi'))
-                              .map((voice, i) => (
-                                <option key={i} value={voice.voiceURI}>
-                                  {voice.name} ({voice.lang})
-                                </option>
-                              ))}
-                            {voices.length > 0 && voices.filter(v => v.lang.includes('vi')).length === 0 && (
-                              <option disabled>Không tìm thấy giọng Tiếng Việt</option>
-                            )}
-                          </select>
-                          <button 
-                            onClick={() => {
-                              if (!synth) return;
-                              synth.cancel();
-                              const test = new SpeechSynthesisUtterance("Xin chào, đây là giọng đọc thử nghiệm.");
-                              const v = voices.find(v => v.voiceURI === selectedVoiceURI) || voices.find(v => v.lang.includes('vi'));
-                              if (v) test.voice = v;
-                              test.lang = 'vi-VN';
-                              synth.speak(test);
-                            }}
-                            className="w-full mt-2 py-2 bg-orange-100 text-orange-700 rounded-xl text-[10px] font-bold hover:bg-orange-200 transition-all"
-                          >
-                            Thử giọng
-                          </button>
                         </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
                   <div className="flex items-center justify-between mb-8">
                     <div className="flex flex-col gap-1">
@@ -1130,18 +1173,57 @@ export default function App() {
               </div>
 
               {scrapingProgress && (
-                <div className="mb-6 bg-orange-50 rounded-2xl p-4 border border-orange-100">
-                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-orange-600 mb-2">
-                    <span>Tiến độ tải chương</span>
-                    <span>{Math.round((scrapingProgress.current / scrapingProgress.total) * 100)}%</span>
+                <div className="mb-6 bg-orange-50 rounded-2xl p-6 border border-orange-100 shadow-sm">
+                  <div className="flex justify-between items-center mb-4">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-orange-600">Tiến độ tải chương</span>
+                      <span className="text-xs font-bold text-black/70 truncate max-w-[200px]">{scrapingProgress.novelTitle}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      {scrapingProgress.isPaused ? (
+                        <button 
+                          onClick={() => bulkScrape(selectedNovel!, rangeStart - 1, rangeEnd - 1, true)}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-orange-600 text-white rounded-xl text-[10px] font-bold hover:bg-orange-700 transition-all shadow-sm"
+                        >
+                          <Play size={12} fill="currentColor" /> Tiếp tục
+                        </button>
+                      ) : (
+                        <button 
+                          onClick={() => { isScrapingPaused.current = true; }}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-white border border-orange-200 text-orange-700 rounded-xl text-[10px] font-bold hover:bg-orange-50 transition-all shadow-sm"
+                        >
+                          <Pause size={12} fill="currentColor" /> Tạm dừng
+                        </button>
+                      )}
+                      <button 
+                        onClick={() => {
+                          isScrapingPaused.current = true;
+                          setScrapingProgress(null);
+                        }}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-black/5 text-black/60 rounded-xl text-[10px] font-bold hover:bg-black/10 transition-all"
+                      >
+                        Hủy
+                      </button>
+                    </div>
                   </div>
-                  <div className="w-full h-2 bg-orange-200 rounded-full overflow-hidden">
+                  
+                  <div className="w-full h-3 bg-orange-200 rounded-full overflow-hidden shadow-inner">
                     <div 
-                      className="h-full bg-orange-600 transition-all duration-300" 
+                      className="h-full bg-orange-600 transition-all duration-500 ease-out relative" 
                       style={{ width: `${(scrapingProgress.current / scrapingProgress.total) * 100}%` }}
-                    />
+                    >
+                      <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                    </div>
                   </div>
-                  <p className="text-[10px] mt-2 text-orange-600/70 font-medium">Đang xử lý: {scrapingProgress.current} / {scrapingProgress.total} chương</p>
+                  
+                  <div className="flex justify-between mt-3">
+                    <p className="text-[10px] text-orange-600/70 font-bold">
+                      {scrapingProgress.isPaused ? 'Đã tạm dừng' : 'Đang tải...'}
+                    </p>
+                    <p className="text-[10px] text-orange-600 font-bold">
+                      {scrapingProgress.current} / {scrapingProgress.total} chương ({Math.round((scrapingProgress.current / scrapingProgress.total) * 100)}%)
+                    </p>
+                  </div>
                 </div>
               )}
 
