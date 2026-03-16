@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "SiteConfig": {
+      "title": "SiteConfig",
+      "description": "Configuration for crawling a specific website using CSS selectors.",
+      "type": "object",
+      "properties": {
+        "domain": { "type": "string", "description": "The domain of the website (e.g., 69shuba.com)" },
+        "selectors": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string" },
+            "author": { "type": "string" },
+            "cover": { "type": "string" },
+            "description": { "type": "string" },
+            "chapterList": { "type": "string" },
+            "chapterTitle": { "type": "string" },
+            "chapterContent": { "type": "string" }
+          },
+          "required": ["title", "chapterContent"]
+        },
+        "charset": { "type": "string", "description": "Default charset for the site (e.g., gbk, utf-8)" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["domain", "selectors"]
+    },
+    "Novel": {
+      "title": "Novel",
+      "description": "Standardized novel metadata.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "author": { "type": "string" },
+        "cover": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "firestore": {
+    "site_configs/{domain}": {
+      "schema": "SiteConfig",
+      "description": "Collection of site-specific selectors for crawling."
+    }
+  }
+}

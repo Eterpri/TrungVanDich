@@ -188,12 +188,113 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
   throw lastError;
 };
 
+interface SiteSelectors {
+  title?: string;
+  author?: string;
+  cover?: string;
+  description?: string;
+  chapterList?: string;
+  chapterTitle?: string;
+  chapterContent?: string;
+}
+
+interface CrawlRequest {
+  url: string;
+  selectors?: SiteSelectors;
+  type: 'info' | 'chapter';
+}
+
+// Helper to apply selectors and return normalized data
+const applySelectors = ($: cheerio.CheerioAPI, selectors: SiteSelectors, type: 'info' | 'chapter', baseUrl: string) => {
+  if (type === 'info') {
+    const title = selectors.title ? $(selectors.title).first().text().trim() : "";
+    const author = selectors.author ? $(selectors.author).first().text().trim().replace(/作者[:：]/, "") : "";
+    let cover = selectors.cover ? $(selectors.cover).first().attr("src") : "";
+    if (cover && !cover.startsWith("http")) cover = new URL(cover, baseUrl).href;
+    const description = selectors.description ? $(selectors.description).first().text().trim() : "";
+    
+    const chapters: { title: string; url: string }[] = [];
+    if (selectors.chapterList) {
+      $(selectors.chapterList).each((_, el) => {
+        const $el = $(el);
+        const cTitle = $el.text().trim();
+        let cUrl = $el.attr("href");
+        if (cUrl && cTitle) {
+          if (!cUrl.startsWith("http")) cUrl = new URL(cUrl, baseUrl).href;
+          chapters.push({ title: cTitle, url: cUrl });
+        }
+      });
+    }
+    
+    return { title, author, cover, description, chapters };
+  } else {
+    const title = selectors.chapterTitle ? $(selectors.chapterTitle).first().text().trim() : "";
+    let content = "";
+    if (selectors.chapterContent) {
+      const found = $(selectors.chapterContent);
+      found.find("script, ins, .ads, .ad, style, a, iframe, table").remove();
+      content = found.html() || "";
+    }
+    return { title, content };
+  }
+};
+
+// API to get HTML snippet for AI parsing
+app.post("/api/get-html-snippet", async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: "URL is required" });
+  try {
+    const response = await fetchWithRetry(url);
+    const buffer = Buffer.from(response.data);
+    const html = buffer.toString('utf-8').slice(0, 50000); // Send first 50k chars
+    res.json({ html });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Universal Crawl API
+app.post("/api/crawl", async (req, res) => {
+  const { url, selectors, type } = req.body as CrawlRequest;
+  if (!url) return res.status(400).json({ error: "URL is required" });
+
+  try {
+    const response = await fetchWithRetry(url);
+    const buffer = Buffer.from(response.data);
+    
+    // Charset detection
+    let charset = "utf-8";
+    const contentType = response.headers["content-type"] || "";
+    const charsetMatch = contentType.toString().match(/charset=([^;]+)/i);
+    if (charsetMatch) {
+      charset = charsetMatch[1].toLowerCase();
+    }
+    
+    const html = iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
+    const $ = cheerio.load(html);
+    
+    if (selectors) {
+      const data = applySelectors($, selectors, type, url);
+      return res.json({ ...data, charset, source: 'selectors' });
+    }
+    
+    // Fallback to existing smart logic if no selectors provided
+    // (This part will be handled by existing endpoints or we can unify them)
+    res.status(400).json({ error: "Selectors required for universal crawl" });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // API to fetch and parse Chinese novel content
 app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL is required" });
 
   let targetUrl = url.trim();
+  // Fix common typos like hhttps, ttps, htps or double protocols (e.g. https://hhttps://)
+  targetUrl = targetUrl.replace(/^((h+t+p+s?|t+p+s?|h+p+s?):?\/+)+/i, 'https://');
+  
   if (!targetUrl.startsWith("http")) {
     targetUrl = "https://" + targetUrl;
   }
@@ -342,6 +443,9 @@ app.post("/api/novel-info", async (req, res) => {
   if (!url) return res.status(400).json({ error: "URL is required" });
 
   let targetUrl = url.trim();
+  // Fix common typos like hhttps, ttps, htps or double protocols (e.g. https://hhttps://)
+  targetUrl = targetUrl.replace(/^((h+t+p+s?|t+p+s?|h+p+s?):?\/+)+/i, 'https://');
+  
   if (!targetUrl.startsWith("http")) targetUrl = "https://" + targetUrl;
 
   // Specific normalization for 69shuba to jump to book info page
@@ -536,7 +640,7 @@ app.post("/api/translate", async (req, res) => {
 
 // API to fetch multiple chapters content
 app.post("/api/scrape-chapters", async (req, res) => {
-  const { urls } = req.body;
+  const { urls, selectors } = req.body;
   if (!urls || !Array.isArray(urls)) return res.status(400).json({ error: "URLs array is required" });
 
   const limitedUrls = urls.slice(0, 100);
@@ -566,45 +670,54 @@ app.post("/api/scrape-chapters", async (req, res) => {
       const $ = cheerio.load(html);
       
       let content = "";
-      const selectors = [".txtnav", "#content", ".content", ".read-content", "#txt", ".book_content", ".chapter-content", ".showtxt"];
-      for (const s of selectors) {
-        const found = $(s);
-        if (found.length > 0) {
-          found.find("script, ins, .ads, .ad, style, a, .info, .title, .navigation, iframe, table").remove();
-          
-          // If the container itself is a table and looks like navigation, skip it
-          if (found.is("table")) {
-            const text = found.text();
-            if (text.includes("选择背景") || text.includes("字体大小") || found.find("a").length > 10) {
-              continue;
+      let title = "";
+
+      if (selectors && selectors.chapterContent) {
+        const data = applySelectors($, selectors, 'chapter', url);
+        content = data.content;
+        title = data.title;
+      } else {
+        const contentSelectors = [".txtnav", "#content", ".content", ".read-content", "#txt", ".book_content", ".chapter-content", ".showtxt"];
+        for (const s of contentSelectors) {
+          const found = $(s);
+          if (found.length > 0) {
+            found.find("script, ins, .ads, .ad, style, a, .info, .title, .navigation, iframe, table").remove();
+            
+            // If the container itself is a table and looks like navigation, skip it
+            if (found.is("table")) {
+              const text = found.text();
+              if (text.includes("选择背景") || text.includes("字体大小") || found.find("a").length > 10) {
+                continue;
+              }
             }
+
+            // Specific cleaning for piaotia/ptwxz
+            found.contents().filter(function() {
+              if (this.type !== 'text') return false;
+              const text = (this as any).data;
+              return (
+                text.includes("选择背景") || 
+                text.includes("字体大小") || 
+                text.includes("加入书架") ||
+                text.includes("投推荐票") ||
+                text.includes("上一页") ||
+                text.includes("下一页") ||
+                text.includes("返回书页") ||
+                text.includes("返回目录") ||
+                text.includes("书签")
+              );
+            }).remove();
+
+            content = found.text().trim()
+              .replace(/\s+/g, " ")
+              .replace(/&nbsp;/g, " ")
+              .replace(/\n\s*\n/g, "\n\n");
+            if (content.length > 100) break;
           }
-
-          // Specific cleaning for piaotia/ptwxz
-          found.contents().filter(function() {
-            if (this.type !== 'text') return false;
-            const text = (this as any).data;
-            return (
-              text.includes("选择背景") || 
-              text.includes("字体大小") || 
-              text.includes("加入书架") ||
-              text.includes("投推荐票") ||
-              text.includes("上一页") ||
-              text.includes("下一页") ||
-              text.includes("返回书页") ||
-              text.includes("返回目录") ||
-              text.includes("书签")
-            );
-          }).remove();
-
-          content = found.text().trim()
-            .replace(/\s+/g, " ")
-            .replace(/&nbsp;/g, " ")
-            .replace(/\n\s*\n/g, "\n\n");
-          if (content.length > 100) break;
         }
+        title = $("h1").first().text().trim() || "Chương không tên";
       }
-      return { url, content, title: $("h1").first().text().trim() || "Chương không tên" };
+      return { url, content, title };
     } catch (e) {
       return { url, error: true };
     }

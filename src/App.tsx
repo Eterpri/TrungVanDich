@@ -66,6 +66,10 @@ interface Novel {
   timestamp: number;
 }
 
+import { universalCrawl, saveSiteConfig, SiteConfig, getSiteConfig, seedConfigs } from './services/crawlerService';
+import { auth } from './firebase';
+import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
+
 export default function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
@@ -93,6 +97,24 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [userApiKey, setUserApiKey] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const login = async () => {
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (err: any) {
+      setError("Lỗi đăng nhập: " + err.message);
+    }
+  };
+
+  const logout = () => signOut(auth);
   
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const wakeLockRef = useRef<any>(null);
@@ -143,31 +165,32 @@ export default function App() {
     });
   };
 
+  const cleanUrl = (inputUrl: string) => {
+    if (!inputUrl) return '';
+    let cleaned = inputUrl.trim();
+    // Fix common typos like hhttps, ttps, htps or double protocols (e.g. https://hhttps://)
+    cleaned = cleaned.replace(/^((h+t+p+s?|t+p+s?|h+p+s?):?\/+)+/i, 'https://');
+    if (!cleaned.startsWith('http') && cleaned.length > 0) {
+      cleaned = 'https://' + cleaned;
+    }
+    return cleaned;
+  };
+
   const fetchNovelInfo = async (targetUrl: string) => {
+    const cleanedUrl = cleanUrl(targetUrl);
+    setUrl(cleanedUrl);
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/novel-info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl }),
-      });
-
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const text = await response.text();
-        throw new Error(`Lỗi phản hồi từ máy chủ. Nội dung: ${text.slice(0, 50)}...`);
-      }
-
-      const data = await response.json();
-      if (!response.ok) {
-        if (response.status === 403 || (data.error && data.error.includes('403'))) {
-          throw new Error('Trang web đang chặn yêu cầu (Lỗi 403). Có thể do hệ thống bảo mật của họ. Vui lòng thử lại sau hoặc dùng link khác.');
-        }
-        throw new Error(data.error || 'Lỗi lấy thông tin truyện');
-      }
+      // Use Universal Crawler
+      const data = await universalCrawl(cleanedUrl, 'info');
       
-      const novel: Novel = { ...data, url: targetUrl, timestamp: Date.now() };
+      const novel: Novel = { 
+        ...data, 
+        url: cleanedUrl, 
+        sourceUrl: cleanedUrl,
+        timestamp: Date.now() 
+      };
       setSelectedNovel(novel);
       setRangeStart(1);
       setRangeEnd(Math.min(data.chapters.length, 50));
@@ -253,6 +276,10 @@ export default function App() {
     isScrapingPaused.current = false;
     const chaptersToScrape = novel.chapters.slice(startIdx, endIdx + 1);
     
+    // Get config for selectors
+    const domain = new URL(novel.url).hostname.replace('www.', '');
+    const config = await getSiteConfig(domain);
+
     // Check existing downloads in IDB
     const existing = await getDownloadedChapters(novel.sourceUrl || novel.title);
     const existingUrls = new Set(existing.map(e => e.url));
@@ -288,7 +315,10 @@ export default function App() {
           const response = await fetch('/api/scrape-chapters', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ urls: batch.map(c => c.url) }),
+            body: JSON.stringify({ 
+              urls: batch.map(c => c.url),
+              selectors: config?.selectors
+            }),
           });
           
           if (!response.ok) throw new Error("Lỗi kết nối máy chủ");
@@ -338,6 +368,8 @@ export default function App() {
   };
 
   const fetchNovel = async (targetUrl: string) => {
+    const cleanedUrl = cleanUrl(targetUrl);
+    setUrl(cleanedUrl);
     if (synth) synth.cancel();
     setIsSpeaking(false);
     
@@ -346,8 +378,8 @@ export default function App() {
     setNovelData(null);
     
     // Check cache first
-    if (preTranslated[targetUrl]) {
-      setTranslatedContent(preTranslated[targetUrl]);
+    if (preTranslated[cleanedUrl]) {
+      setTranslatedContent(preTranslated[cleanedUrl]);
     } else {
       setTranslatedContent('');
     }
@@ -355,42 +387,25 @@ export default function App() {
     setActiveTab('reader');
     
     try {
-      const response = await fetch('/api/fetch-novel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl }),
-      });
-
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const text = await response.text();
-        throw new Error(`Máy chủ phản hồi không đúng định dạng. Nội dung: ${text.slice(0, 50)}...`);
-      }
-
-      const data = await response.json();
-      if (!response.ok) {
-        if (response.status === 403 || (data.error && data.error.includes('403'))) {
-          throw new Error('Trang web đang chặn yêu cầu (Lỗi 403). Vui lòng thử lại sau.');
-        }
-        throw new Error(data.error || 'Lỗi tải truyện');
-      }
+      // Use Universal Crawler
+      const data = await universalCrawl(cleanedUrl, 'chapter');
       
       setNovelData(data);
-      saveToHistory(data.title || 'Truyện không tên', targetUrl);
+      saveToHistory(data.title || 'Truyện không tên', cleanedUrl);
 
       // Auto translate if not in cache
-      if (!preTranslated[targetUrl]) {
+      if (!preTranslated[cleanedUrl]) {
         const translated = await translateContent(data.content);
         if (translated) {
           setTranslatedContent(translated);
-          updateCache(targetUrl, translated);
+          updateCache(cleanedUrl, translated);
           // Pre-translate next chapter
-          preTranslateNext(targetUrl);
+          preTranslateNext(cleanedUrl);
         }
       } else {
-        setTranslatedContent(preTranslated[targetUrl]);
+        setTranslatedContent(preTranslated[cleanedUrl]);
         // Even if cached, we might want to pre-translate the NEXT one
-        preTranslateNext(targetUrl);
+        preTranslateNext(cleanedUrl);
       }
     } catch (err: any) {
       setError(err.message);
@@ -1051,6 +1066,44 @@ export default function App() {
                     >
                       Xóa
                     </button>
+                  </div>
+                </section>
+
+                {/* Backup Section */}
+                <section className="space-y-4 pt-6 border-t border-black/5">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-black/40">Tài khoản & Hệ thống</h3>
+                  <div className="flex flex-col gap-3">
+                    {user ? (
+                      <div className="flex items-center justify-between bg-black/5 p-4 rounded-2xl">
+                        <div className="flex items-center gap-3">
+                          <img src={user.photoURL || ''} alt="" className="w-8 h-8 rounded-full" />
+                          <div>
+                            <p className="text-xs font-bold">{user.displayName}</p>
+                            <p className="text-[10px] text-black/40">{user.email}</p>
+                          </div>
+                        </div>
+                        <button onClick={logout} className="text-xs font-bold text-red-600 hover:underline">Đăng xuất</button>
+                      </div>
+                    ) : (
+                      <button 
+                        onClick={login}
+                        className="w-full bg-black text-white py-3 rounded-2xl text-xs font-bold hover:bg-black/80 transition-all flex items-center justify-center gap-2"
+                      >
+                        <Sun size={14} /> Đăng nhập Google
+                      </button>
+                    )}
+
+                    {user?.email === 'cuongbt.nb@gmail.com' && (
+                      <button 
+                        onClick={async () => {
+                          await seedConfigs();
+                          alert("Đã nạp cấu hình mẫu thành công!");
+                        }}
+                        className="w-full bg-orange-50 text-orange-700 py-3 rounded-2xl text-xs font-bold hover:bg-orange-100 transition-all border border-orange-200 flex items-center justify-center gap-2"
+                      >
+                        <Zap size={14} /> Nạp cấu hình mẫu (Admin)
+                      </button>
+                    )}
                   </div>
                 </section>
 
