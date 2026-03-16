@@ -205,7 +205,7 @@ app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
   }
 
   try {
-    const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
+    const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz", "paotia"];
     const isGBKHint = gbkSites.some(site => targetUrl.includes(site));
 
     const fetchPage = async (u: string, depth: number = 0): Promise<{ html: string; charset: string }> => {
@@ -268,7 +268,7 @@ app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
         // Remove common garbage elements found in Chinese novel sites
         found.find("script, ins, .ads, .ad, .bottom-ad, a, .navigation, style, iframe, .bottem2, .p_next, .p_prev, .header, .footer, .sidebar, #top_nav, #footer_nav").remove();
         
-        // Remove tables that are likely navigation (usually have many links or specific text)
+        // Remove tables that are likely navigation
         found.find("table").each((_, el) => {
           const $el = $(el);
           const text = $el.text();
@@ -276,11 +276,19 @@ app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
             $el.remove();
           }
         });
+
+        // If the container itself is a table and looks like navigation, skip it
+        if (found.is("table")) {
+          const text = found.text();
+          if (text.includes("选择背景") || text.includes("字体大小") || found.find("a").length > 10) {
+            continue;
+          }
+        }
         
         // Specific cleaning for piaotia and similar sites that put nav inside content
         found.contents().filter(function() {
           if (this.type !== 'text') return false;
-          const text = this.data;
+          const text = (this as any).data;
           return (
             text.includes("选择背景") || 
             text.includes("字体大小") || 
@@ -288,7 +296,11 @@ app.post(["/api/fetch-novel", "/api/fetch-novel/"], async (req, res) => {
             text.includes("投推荐票") ||
             text.includes("上一页") ||
             text.includes("下一页") ||
-            text.includes("返回书页")
+            text.includes("返回书页") ||
+            text.includes("返回目录") ||
+            text.includes("书签") ||
+            text.includes("推荐本书") ||
+            text.includes("返回书架")
           );
         }).remove();
 
@@ -346,7 +358,7 @@ app.post("/api/novel-info", async (req, res) => {
   }
 
   try {
-    const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
+    const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz", "paotia"];
     const isGBKHint = gbkSites.some(site => targetUrl.includes(site));
 
     const fetchPage = async (u: string, depth: number = 0): Promise<string> => {
@@ -532,7 +544,7 @@ app.post("/api/scrape-chapters", async (req, res) => {
   // Fetch in parallel with a small concurrency limit to avoid being blocked
   const fetchChapter = async (url: string) => {
     try {
-      const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz"];
+      const gbkSites = ["69shu", "biquge", "xbiquge", "biqubao", "230book", "69shuba", "piaotia", "ptwxz", "paotia"];
       const isGBK = gbkSites.some(site => url.includes(site));
 
       const response = await fetchWithRetry(url);
@@ -544,17 +556,47 @@ app.post("/api/scrape-chapters", async (req, res) => {
       const charsetMatch = contentType.toString().match(/charset=([^;]+)/i);
       if (charsetMatch) {
         charset = charsetMatch[1].toLowerCase();
+      } else {
+        const tempHtml = buffer.toString("ascii");
+        const metaMatch = tempHtml.match(/<meta[^>]*charset=["']?([^"'>\s]+)["']?/i);
+        if (metaMatch) charset = metaMatch[1].toLowerCase();
       }
       
       const html = iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
       const $ = cheerio.load(html);
       
       let content = "";
-      const selectors = [".txtnav", "#content", ".content", ".read-content", "#txt", ".book_content", ".chapter-content"];
+      const selectors = [".txtnav", "#content", ".content", ".read-content", "#txt", ".book_content", ".chapter-content", ".showtxt"];
       for (const s of selectors) {
         const found = $(s);
         if (found.length > 0) {
-          found.find("script, ins, .ads, .ad, style, a, .info, .title, .navigation").remove();
+          found.find("script, ins, .ads, .ad, style, a, .info, .title, .navigation, iframe, table").remove();
+          
+          // If the container itself is a table and looks like navigation, skip it
+          if (found.is("table")) {
+            const text = found.text();
+            if (text.includes("选择背景") || text.includes("字体大小") || found.find("a").length > 10) {
+              continue;
+            }
+          }
+
+          // Specific cleaning for piaotia/ptwxz
+          found.contents().filter(function() {
+            if (this.type !== 'text') return false;
+            const text = (this as any).data;
+            return (
+              text.includes("选择背景") || 
+              text.includes("字体大小") || 
+              text.includes("加入书架") ||
+              text.includes("投推荐票") ||
+              text.includes("上一页") ||
+              text.includes("下一页") ||
+              text.includes("返回书页") ||
+              text.includes("返回目录") ||
+              text.includes("书签")
+            );
+          }).remove();
+
           content = found.text().trim()
             .replace(/\s+/g, " ")
             .replace(/&nbsp;/g, " ")
