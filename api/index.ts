@@ -4,6 +4,7 @@ import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import https from "https";
 
 dotenv.config();
 
@@ -21,11 +22,11 @@ app.get("/api/health", (req, res) => {
 });
 
 const userAgents = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-  "Mozilla/5.0 (AppleWebKit/537.36; Chrome/122.0.0.0; Safari/537.36; Edge/122.0.0.0)"
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+  "Mozilla/5.0 (AppleWebKit/537.36; Chrome/123.0.0.0; Safari/537.36; Edge/123.0.0.0)"
 ];
 
 const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
@@ -33,29 +34,44 @@ const getScrapingHeaders = (targetUrl: string, retryCount: number = 0) => {
   // Simulate a random IP to try and bypass simple IP filters
   const randomIp = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
   
-  return {
-    "User-Agent": userAgents[retryCount % userAgents.length],
+  const isTruyenFull = targetUrl.includes("truyenfull");
+  const isPiaotia = targetUrl.includes("piaotia");
+
+  const headers: any = {
+    "User-Agent": userAgents[(retryCount + Math.floor(Math.random() * 10)) % userAgents.length],
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,vi;q=0.7",
-    "Accept-Encoding": "gzip, deflate",
+    "Accept-Language": isTruyenFull ? "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7" : "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "Referer": urlObj.origin + "/",
-    "Host": urlObj.host,
-    "Connection": "keep-alive",
-    "X-Forwarded-For": randomIp,
-    "X-Real-IP": randomIp,
-    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "Sec-Ch-Ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Site": "none",
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
-    "Cookie": `__cf_bm=random_${Math.random().toString(36).substring(7)};` // Fake Cloudflare cookie hint
+    "Referer": isPiaotia ? `https://www.piaotia.com/html/${Math.floor(Math.random() * 20)}/` : "https://www.google.com/",
+    "X-Forwarded-For": randomIp,
+    "X-Real-IP": randomIp,
+    "DNT": "1",
+    "Cookie": `__cf_bm=random_${Math.random().toString(36).substring(7)}; JSESSIONID=${Math.random().toString(36).substring(10)};`
   };
+
+  // Some sites require specific Host header
+  if (!targetUrl.match(/^\d+\.\d+\.\d+\.\d+/)) {
+    headers["Host"] = urlObj.host;
+  }
+
+  return headers;
 };
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const httpsAgent = new https.Agent({
+  rejectUnauthorized: false,
+});
 
 const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
   const maxRetries = 5;
@@ -64,6 +80,9 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
 
   // Mirror fallback for 69shuba if blocked or down
   const is69Shu = targetUrl.includes("69shu") || targetUrl.includes("69xinshuba");
+  const isTruyenFull = targetUrl.includes("truyenfull");
+  const isPiaotia = targetUrl.includes("piaotia.com");
+  
   // Expanded and prioritized mirrors list
   const mirrors = [
     "www.69shuba.cx", 
@@ -86,9 +105,15 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
   }
 
   for (let i = 0; i <= maxRetries; i++) {
+    if (i > 0) {
+      const delay = Math.min(1000 * Math.pow(2, i - 1), 10000);
+      console.log(`Waiting ${delay}ms before retry ${i}...`);
+      await sleep(delay);
+    }
+    
     try {
       // Use proxy if configured AND (it's a known problematic site OR we've already failed once)
-      const shouldByPass = is69Shu || currentUrl.includes("69xinshuba") || i > 0;
+      const shouldByPass = is69Shu || isTruyenFull || isPiaotia || currentUrl.includes("69xinshuba") || i > 0;
       
       if (gasProxyUrl && shouldByPass) {
         console.log(`[Proxy] Attempting GAS Proxy for: ${currentUrl} (Attempt ${i + 1})`);
@@ -128,8 +153,17 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
         timeout: 15000,
         maxRedirects: 5,
         validateStatus: (status) => status < 500,
+        httpsAgent: currentUrl.match(/^\d+\.\d+\.\d+\.\d+/) || currentUrl.includes("14.225.254.182") ? httpsAgent : undefined,
         ...options
       });
+
+      if (response.status === 429) {
+        console.warn(`[Direct] 429 Too Many Requests from ${currentUrl}. Forcing proxy for next attempt.`);
+        lastError = new Error(`429 Too Many Requests - Website is rate-limiting.`);
+        // Increase delay significantly for 429
+        await sleep(5000 * (i + 1));
+        continue;
+      }
 
       // Check for landing pages like choto.click or empty responses
       if (response.status === 200 && is69Shu) {
@@ -157,6 +191,14 @@ const fetchWithRetry = async (targetUrl: string, options: any = {}) => {
             continue; 
           }
         }
+        
+        // If not 69shu but we have GAS proxy, it will be used in the next retry attempt
+        // because shouldByPass will be true (i > 0)
+        if (gasProxyUrl && i < maxRetries) {
+          console.log(`403 on ${currentUrl}, will try via GAS proxy in next attempt.`);
+          continue;
+        }
+        
         throw new Error("403 Forbidden - Website is blocking the request.");
       }
 
@@ -210,7 +252,13 @@ const applySelectors = ($: cheerio.CheerioAPI, selectors: SiteSelectors, type: '
     const title = selectors.title ? $(selectors.title).first().text().trim() : "";
     const author = selectors.author ? $(selectors.author).first().text().trim().replace(/作者[:：]/, "") : "";
     let cover = selectors.cover ? $(selectors.cover).first().attr("src") : "";
-    if (cover && !cover.startsWith("http")) cover = new URL(cover, baseUrl).href;
+    if (cover && !cover.startsWith("http")) {
+      try {
+        cover = new URL(cover, baseUrl).href;
+      } catch (e) {
+        // ignore
+      }
+    }
     const description = selectors.description ? $(selectors.description).first().text().trim() : "";
     
     const chapters: { title: string; url: string }[] = [];
@@ -220,22 +268,35 @@ const applySelectors = ($: cheerio.CheerioAPI, selectors: SiteSelectors, type: '
         const cTitle = $el.text().trim();
         let cUrl = $el.attr("href");
         if (cUrl && cTitle) {
-          if (!cUrl.startsWith("http")) cUrl = new URL(cUrl, baseUrl).href;
-          chapters.push({ title: cTitle, url: cUrl });
+          try {
+            if (!cUrl.startsWith("http")) cUrl = new URL(cUrl, baseUrl).href;
+            chapters.push({ title: cTitle, url: cUrl });
+          } catch (e) {
+            // ignore
+          }
         }
       });
     }
-    
-    return { title, author, cover, description, chapters };
+
+    // Heuristic: If we have very few chapters and a lot of text, it might be a chapter page
+    const bodyText = $("body").text().length;
+    const isLikelyChapter = chapters.length < 5 && bodyText > 2000;
+
+    return { title, author, cover, description, chapters, isLikelyChapter };
   } else {
     const title = selectors.chapterTitle ? $(selectors.chapterTitle).first().text().trim() : "";
     let content = "";
     if (selectors.chapterContent) {
-      const found = $(selectors.chapterContent);
+      const found = $(selectors.chapterContent).clone();
       found.find("script, ins, .ads, .ad, style, a, iframe, table").remove();
       content = found.html() || "";
     }
-    return { title, content };
+    
+    // Heuristic: If content is very short but there are many links, it might be an info page
+    const linkCount = $("a").length;
+    const isLikelyInfo = content.length < 500 && linkCount > 20;
+
+    return { title, content, isLikelyInfo };
   }
 };
 
@@ -245,8 +306,15 @@ app.post("/api/get-html-snippet", async (req, res) => {
   if (!url) return res.status(400).json({ error: "URL is required" });
   try {
     const response = await fetchWithRetry(url);
+    if (!response.data) {
+      throw new Error("Không nhận được dữ liệu từ trang web.");
+    }
     const buffer = Buffer.from(response.data);
-    const html = buffer.toString('utf-8').slice(0, 50000); // Send first 50k chars
+    
+    // Basic charset detection for snippet
+    const isGBK = url.includes("69shu") || url.includes("piaotia") || url.includes("ptwxz");
+    const html = iconv.decode(buffer, isGBK ? 'gbk' : 'utf-8').slice(0, 50000);
+    
     res.json({ html });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -268,9 +336,14 @@ app.post("/api/crawl", async (req, res) => {
     const charsetMatch = contentType.toString().match(/charset=([^;]+)/i);
     if (charsetMatch) {
       charset = charsetMatch[1].toLowerCase();
+    } else {
+      // Heuristic for Chinese sites
+      if (url.includes("69shu") || url.includes("piaotia") || url.includes("ptwxz") || url.includes("biquge")) {
+        charset = "gbk";
+      }
     }
     
-    const html = iconv.decode(buffer, charset === "gb2312" ? "gbk" : charset);
+    const html = iconv.decode(buffer, (charset === "gb2312" || charset === "gbk") ? "gbk" : charset);
     const $ = cheerio.load(html);
     
     if (selectors) {
@@ -616,10 +689,12 @@ app.post("/api/translate", async (req, res) => {
   const { text, apiKey: userApiKey } = req.body;
   if (!text) return res.status(400).json({ error: "Text is required" });
   
-  const apiKey = userApiKey || serverApiKey;
-  if (!apiKey) {
+  // Always prefer user key, then fallback to environment variable
+  const apiKey = userApiKey || process.env.GEMINI_API_KEY;
+  
+  if (!apiKey || apiKey === "undefined" || apiKey === "null") {
     return res.status(401).json({ 
-      error: "Thiếu API Key. Vui lòng cấu hình GEMINI_API_KEY trong biến môi trường hoặc nhập key cá nhân trong cài đặt." 
+      error: "Thiếu API Key. Vui lòng cấu hình GEMINI_API_KEY hoặc nhập key cá nhân trong phần Cài đặt." 
     });
   }
 
@@ -632,9 +707,21 @@ app.post("/api/translate", async (req, res) => {
         systemInstruction: "Bạn là một dịch giả chuyên nghiệp từ tiếng Trung sang tiếng Việt. Hãy dịch nội dung chương truyện sau đây một cách mượt mà, thuần Việt, giữ đúng ngữ cảnh kiếm hiệp/tiên hiệp/ngôn tình. Loại bỏ các đoạn quảng cáo hoặc rác nếu có. Trả về định dạng Markdown."
       }
     });
+    
+    if (!response.text) {
+      throw new Error("Mô hình không trả về nội dung dịch.");
+    }
+    
     res.json({ text: response.text });
   } catch (error: any) {
-    res.status(500).json({ error: `Lỗi dịch thuật: ${error.message}` });
+    console.error("Translation error:", error);
+    let errorMessage = error.message || "Lỗi không xác định";
+    if (errorMessage.includes("API_KEY_INVALID") || errorMessage.includes("invalid api key")) {
+      errorMessage = "API Key không hợp lệ. Vui lòng kiểm tra lại trong phần Cài đặt.";
+    } else if (errorMessage.includes("quota") || errorMessage.includes("429")) {
+      errorMessage = "Hết hạn mức sử dụng API (Quota exceeded). Vui lòng thử lại sau hoặc đổi key khác.";
+    }
+    res.status(500).json({ error: `Lỗi dịch thuật: ${errorMessage}` });
   }
 });
 

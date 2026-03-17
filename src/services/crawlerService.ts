@@ -35,7 +35,18 @@ export const saveSiteConfig = async (config: SiteConfig) => {
   });
 };
 
-export const generateSelectorsWithAI = async (url: string, htmlSnippet: string): Promise<SiteConfig['selectors']> => {
+export const generateSelectorsWithAI = async (url: string, htmlSnippet: string, apiKey?: string): Promise<SiteConfig['selectors']> => {
+  if (!htmlSnippet) {
+    throw new Error("Không thể lấy nội dung trang web để phân tích. Vui lòng kiểm tra lại URL hoặc thử lại sau.");
+  }
+  
+  const finalApiKey = apiKey || localStorage.getItem('gemini_api_key') || process.env.GEMINI_API_KEY || "";
+  if (!finalApiKey) {
+    throw new Error("Thiếu Gemini API Key. Vui lòng cấu hình trong phần Cài đặt.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey: finalApiKey });
+  
   const prompt = `Analyze this HTML snippet from ${url} and extract CSS selectors for a novel website.
   Return ONLY a JSON object with these keys: title, author, cover, description, chapterList, chapterTitle, chapterContent.
   
@@ -122,8 +133,72 @@ export const seedConfigs = async () => {
   console.log("Seeding complete!");
 };
 
-export const universalCrawl = async (url: string, type: 'info' | 'chapter') => {
-  const domain = new URL(url).hostname.replace('www.', '');
+export const universalCrawl = async (url: string, type: 'info' | 'chapter', apiKey?: string) => {
+  let targetUrl = url;
+  
+  const isChapterUrl = (u: string) => {
+    try {
+      const urlObj = new URL(u);
+      const path = urlObj.pathname;
+      const segments = path.split('/').filter(Boolean);
+      
+      // Common patterns
+      if (u.includes('/chuong-') || u.includes('/chapter-') || u.match(/\/chuong\d+/) || u.match(/\/chapter\d+/)) return true;
+      if (u.match(/\/\d+\.html$/)) return true;
+      
+      // Pattern like /truyen/name/novelId/chapterId/
+      if (segments.length >= 4 && segments[segments.length - 1].match(/^\d+$/)) return true;
+      
+      return false;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  // If user pastes a chapter URL into "Quét" (info), try to find the novel main page
+  if (type === 'info' && isChapterUrl(url)) {
+    console.log(`Detected potential chapter URL for info request: ${url}`);
+    
+    // 1. Try simple stripping first
+    const parts = url.split('/');
+    let strippedUrl = url;
+    if (parts[parts.length - 1] === '' || parts[parts.length - 1].match(/^\d+$/) || parts[parts.length - 1].match(/chuong|chapter/)) {
+      strippedUrl = parts.slice(0, -2).join('/') + '/';
+    } else if (parts[parts.length - 1].match(/chuong|chapter/)) {
+      strippedUrl = parts.slice(0, -1).join('/') + '/';
+    }
+    
+    // 2. Fetch the page to see if we can find a "Mục lục" link
+    try {
+      const htmlRes = await fetch('/api/get-html-snippet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      
+      if (htmlRes.ok) {
+        const { html } = await htmlRes.json();
+        if (html) {
+          // Look for "Mục lục" or similar links in the HTML
+          const tocMatch = html.match(/href="([^"]+)"[^>]*>(?:Mục lục|Danh sách chương|Tất cả chương|Index|Table of Contents|返回目录|目录)/i);
+          if (tocMatch) {
+            const tocUrl = new URL(tocMatch[1], url).href;
+            console.log(`Found TOC link on page: ${tocUrl}`);
+            targetUrl = tocUrl;
+          } else {
+            // Fallback to stripped URL if no TOC link found
+            targetUrl = strippedUrl;
+          }
+        }
+      }
+    } catch (e) {
+      targetUrl = strippedUrl;
+    }
+    
+    console.log(`Final target URL for info: ${targetUrl}`);
+  }
+
+  const domain = new URL(targetUrl).hostname.replace('www.', '');
   let config = await getSiteConfig(domain);
 
   if (!config) {
@@ -132,12 +207,22 @@ export const universalCrawl = async (url: string, type: 'info' | 'chapter') => {
     const htmlRes = await fetch('/api/get-html-snippet', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
+      body: JSON.stringify({ url: targetUrl })
     });
+    
+    if (!htmlRes.ok) {
+      const errorData = await htmlRes.json();
+      throw new Error(`Lỗi khi lấy dữ liệu trang web: ${errorData.error || htmlRes.statusText}`);
+    }
+    
     const { html } = await htmlRes.json();
     
+    if (!html) {
+      throw new Error("Không thể lấy nội dung HTML từ trang web này.");
+    }
+    
     // 2. Generate selectors with AI
-    const selectors = await generateSelectorsWithAI(url, html);
+    const selectors = await generateSelectorsWithAI(targetUrl, html, apiKey);
     config = { domain, selectors };
     
     // 3. Save to DB (optional: only if you want to cache it immediately)
@@ -148,9 +233,12 @@ export const universalCrawl = async (url: string, type: 'info' | 'chapter') => {
   const res = await fetch('/api/crawl', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, selectors: config.selectors, type })
+    body: JSON.stringify({ url: targetUrl, selectors: config.selectors, type })
   });
   
-  if (!res.ok) throw new Error("Crawl failed");
+  if (!res.ok) {
+    const errorData = await res.json();
+    throw new Error(`Crawl failed: ${errorData.error || res.statusText}`);
+  }
   return res.json();
 };

@@ -183,7 +183,13 @@ export default function App() {
     setError(null);
     try {
       // Use Universal Crawler
-      const data = await universalCrawl(cleanedUrl, 'info');
+      const data = await universalCrawl(cleanedUrl, 'info', userApiKey);
+      
+      if (data.isLikelyChapter && (!data.chapters || data.chapters.length === 0)) {
+        console.log("Detected chapter page in info mode, switching to reader...");
+        fetchNovel(cleanedUrl);
+        return;
+      }
       
       const novel: Novel = { 
         ...data, 
@@ -388,7 +394,13 @@ export default function App() {
     
     try {
       // Use Universal Crawler
-      const data = await universalCrawl(cleanedUrl, 'chapter');
+      const data = await universalCrawl(cleanedUrl, 'chapter', userApiKey);
+      
+      if (data.isLikelyInfo && (!data.content || data.content.length < 500)) {
+        console.log("Detected info page in chapter mode, switching to scraper...");
+        fetchNovelInfo(cleanedUrl);
+        return;
+      }
       
       setNovelData(data);
       saveToHistory(data.title || 'Truyện không tên', cleanedUrl);
@@ -1050,6 +1062,7 @@ export default function App() {
                     <button 
                       onClick={() => {
                         localStorage.setItem('gemini_api_key', userApiKey);
+                        setError(null); // Clear previous errors when saving new key
                         setShowApiKeyModal(false);
                       }}
                       className="flex-1 bg-black text-white py-3 rounded-2xl text-xs font-bold hover:bg-black/80 transition-all"
